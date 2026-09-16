@@ -1,32 +1,45 @@
-import { useEffect, useState } from "react";
 import { authClient, authEnabled } from "./client";
 
-export type CurrentUser = {
+export type AppUser = {
   id: string;
-  name?: string | null;
-  email?: string | null;
-  image?: string | null;
+  displayName: string | null;
+  primaryEmail: string | null;
+  profileImageUrl: string | null;
+  isDevFallback: boolean;
 };
 
-export function useCurrentUserState() {
-  const session = authClient.useSession();
-  const [user, setUser] = useState<CurrentUser | null>(null);
-  const [isPending, setPending] = useState(true);
+export const DEV_USER: AppUser = {
+  id: "dev-user",
+  displayName: "Dev User",
+  primaryEmail: "dev@example.com",
+  profileImageUrl: null,
+  isDevFallback: true,
+};
 
-  useEffect(() => {
-    if (!authEnabled) {
-      setUser({ id: "dev-user", name: "Director" });
-      setPending(false);
-      return;
-    }
-    setPending(session.isPending);
-    const s = session.data?.user;
-    setUser(
-      s
-        ? { id: s.id, name: s.name, email: s.email, image: s.image }
-        : null,
-    );
-  }, [session.isPending, session.data]);
+export type CurrentUserState = {
+  user: AppUser | null;
+  isPending: boolean;
+};
 
-  return { user, isPending };
+export function useCurrentUserState(): CurrentUserState {
+  if (!authEnabled) return { user: DEV_USER, isPending: false };
+  // eslint-disable-next-line react-hooks/rules-of-hooks -- authEnabled is constant for the app's lifetime
+  const { data, isPending } = authClient.useSession();
+  const user = data?.user;
+  return {
+    user: user
+      ? {
+          id: user.id,
+          displayName: user.name ?? null,
+          primaryEmail: user.email ?? null,
+          profileImageUrl: user.image ?? null,
+          isDevFallback: false,
+        }
+      : null,
+    isPending,
+  };
+}
+
+export function useCurrentUser(): AppUser | null {
+  return useCurrentUserState().user;
 }
