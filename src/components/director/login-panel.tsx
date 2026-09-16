@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { GROK_PROVIDERS, authClient, authEnabled, signIn } from "@/lib/auth/client";
+import { GROK_PROVIDERS, authEnabled, signIn } from "@/lib/auth/client";
 import { Button } from "@/components/ui/button";
 
 export function LoginPanel({ callbackURL = "/" }: { callbackURL?: string }) {
@@ -14,21 +14,36 @@ export function LoginPanel({ callbackURL = "/" }: { callbackURL?: string }) {
     setBusy(true);
     setError(null);
     try {
-      if (mode === "up") {
-        const res = await authClient.signUp.email({
+      const path = mode === "up" ? "/api/auth/sign-up/email" : "/api/auth/sign-in/email";
+      const res = await fetch(path, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
           email: email.trim(),
           password,
           name: email.trim().split("@")[0] || "Director",
           callbackURL,
-        });
-        if (res.error) throw new Error(res.error.message || "Could not create the account.");
-      } else {
-        const res = await authClient.signIn.email({
-          email: email.trim(),
-          password,
-          callbackURL,
-        });
-        if (res.error) throw new Error(res.error.message || "Could not sign in.");
+        }),
+      });
+      const raw = await res.text();
+      let payload: { message?: string } = {};
+      try {
+        payload = JSON.parse(raw) as { message?: string };
+      } catch {
+        payload = {};
+      }
+      if (!res.ok) {
+        const hint =
+          payload.message ||
+          (res.status === 403
+            ? "Invalid origin — set BETTER_AUTH_URL to this site’s https URL (no trailing slash)."
+            : res.status === 401
+              ? "Wrong email or password. Create an account first if you haven’t."
+              : res.status >= 500
+                ? "Server error — Postgres tables may be missing. Redeploy so migrate runs at boot."
+                : raw.slice(0, 180) || `HTTP ${res.status}`);
+        throw new Error(hint);
       }
       window.location.assign(callbackURL);
     } catch (err) {
