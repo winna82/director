@@ -1,0 +1,364 @@
+import { createServerFn } from "@tanstack/react-start";
+import { authMiddleware } from "@/lib/auth/middleware";
+import { composeSequencePrompt, composeShotPrompt, lockWorld } from "./compose";
+import { DIRECTOR_SYSTEM } from "./prompt";
+import type {
+  AspectRatio,
+  ClipDuration,
+  Continuity,
+  DirectorMode,
+  Shot,
+  ShotSize,
+  Storyboard,
+  WorldBible,
+} from "./types";
+import { SHOT_SIZES } from "./types";
+
+const XAI = "https://api.x.ai/v1";
+const CHAT_MODEL = "grok-4.5";
+const VIDEO_MODEL = "grok-imagine-video-1.5";
+const VIDEO_FALLBACK = "grok-imagine-video";
+
+type ContinuityPayload = Omit<Continuity, "lastFrameDataUrl" | "previousVideoUrl">;
+
+type PlanInput = {
+  brief: string;
+  mode: DirectorMode;
+  aspectRatio: AspectRatio;
+  duration: ClipDuration;
+  continuity?: ContinuityPayload | null;
+};
+
+type StartVideoInput = {
+  prompt: string;
+  duration: number;
+  aspectRatio: AspectRatio;
+  startImageDataUrl?: string | null;
+};
+
+function apiKey(): string | null {
+  const key = process.env.XAI_API_KEY?.trim();
+  return key || null;
+}
+
+function extractJson(text: string): unknown {
+  const trimmed = text.trim();
+  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/);
+  const raw = fenced?.[1]?.trim() ?? trimmed;
+  const start = raw.indexOf("{");
+  const end = raw.lastIndexOf("}");
+  if (start === -1 || end === -1 || end <= start) {
+    throw new Error("Director did not return a storyboard.");
+  }
+  return JSON.parse(raw.slice(start, end + 1));
+}
+
+function asString(value: unknown, fallback = ""): string {
+  return typeof value === "string" ? value.trim() : fallback;
+}
+function asNumber(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+function normalizeShotSize(value: unknown): ShotSize | string {
+  const s = asString(value, "medium").toLowerCase().replace(/\s+/g, "-");
+  return (SHOT_SIZES as readonly string[]).includes(s) ? (s as ShotSize) : s;
+}
+
+function parseBoard(raw: unknown, duration: ClipDuration, continuity?: ContinuityPayload | null): Storyboard {
+  if (!raw || typeof raw !== "object") throw new Error("Director returned an empty board.");
+  const o = raw as Record<string, unknown>;
+  const worldRaw = (o.world ?? {}) as Record<string, unknown>;
+  const charsRaw = Array.isArray(worldRaw.characters) ? worldRaw.characters : [];
+  let world: WorldBible = {
+    setting: asString(worldRaw.setting, "unspecified interior"),
+    lighting: asString(worldRaw.lighting, "natural motivated light"),
+    palette: asString(worldRaw.palette, "neutral cinematic"),
+    style: asString(worldRaw.style, "photoreal 35mm cinematic"),
+    characters: charsRaw
+      .map((c) => {
+        if (!c || typeof c !== "object") return null;
+        const row = c as Record<string, unknown>;
+        const name = asString(row.name);
+        if (!name) return null;
+        return { name, look: asString(row.look, "consistent across shots") };
+      })
+      .filter((c): c is { name: string; look: string } => Boolean(c)),
+  };
+  if (continuity) world = lockWorld(world, continuity.world);
+  const shotsRaw = Array.isArray(o.shots) ? o.shots : [];
+  if (shotsRaw.length < 1) throw new Error("Director returned no shots.");
+  const shots: Shot[] = shotsRaw.slice(0, 6).map((item, i) => {
+    const s = (item ?? {}) as Record<string, unknown>;
+    const dialogueRaw = s.dialogue;
+    let dialogue: Shot["dialogue"] = null;
+    if (dialogueRaw && typeof dialogueRaw === "object") {
+      const d = dialogueRaw as Record<string, unknown>;
+      const character = asString(d.character);
+      const line = asString(d.line);
+      if (character && line) dialogue = { character, line };
+    }
+    return {
+      id: `s${i + 1}`,
+      index: i + 1,
+      duration: Math.max(1, Math.round(asNumber(s.duration, 2))),
+      shotSize: normalizeShotSize(s.shotSize),
+      angle: asString(s.angle, "eye-level"),
+      camera: asString(s.camera, "static"),
+      action: asString(s.action, "holds"),
+      dialogue,
+      audio: asString(s.audio, asString(o.audio, "natural ambience")),
+      prompt: asString(s.prompt),
+    };
+  });
+  const sum = shots.reduce((n, s) => n + s.duration, 0);
+  if (sum !== duration && sum > 0) {
+    const scale = duration / sum;
+    let used = 0;
+    shots.forEach((shot, i) => {
+      if (i === shots.length - 1) shot.duration = Math.max(1, duration - used);
+      else {
+        shot.duration = Math.max(1, Math.round(shot.duration * scale));
+        used += shot.duration;
+      }
+    });
+  }
+  const board: Storyboard = {
+    title: asString(o.title, "Untitled scene"),
+    logline: asString(o.logline),
+    world,
+    audio: asString(o.audio, continuity?.audio ?? "natural ambience, no score"),
+    shots,
+    sequencePrompt: asString(o.sequencePrompt),
+  };
+  const cont: Continuity | null = continuity
+    ? { ...continuity, lastFrameDataUrl: null, previousVideoUrl: null }
+    : null;
+  board.sequencePrompt = composeSequencePrompt(board, cont);
+  board.shots = board.shots.map((shot) => ({
+    ...shot,
+    prompt: composeShotPrompt(board, shot, cont),
+  }));
+  return board;
+}
+
+function continuityUserBlock(c: ContinuityPayload): string {
+  const faces = c.world.characters.map((ch) => `- ${ch.name}: ${ch.look}`).join("\n");
+  return [
+    `CONTINUATION — next scene of the same film.`,
+    `Previous scene title: ${c.fromTitle}`,
+    `Previous logline: ${c.fromLogline}`,
+    `It ended on: ${c.fromLastShot}`,
+    `Locked style: ${c.world.style}`,
+    `Locked palette: ${c.world.palette}`,
+    `Locked lighting (evolve only if the brief moves): ${c.world.lighting}`,
+    `Locked setting (evolve only if the brief moves): ${c.world.setting}`,
+    `Locked characters (copy looks verbatim):`,
+    faces || "- none",
+    `Master audio so far: ${c.audio}`,
+    `The user's brief is ONLY what happens next. First shot picks up from the ending beat.`,
+  ].join("\n");
+}
+
+export const checkAi = createServerFn({ method: "POST" }).handler(async () => {
+  return { ok: Boolean(apiKey()) };
+});
+
+export const planStoryboard = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
+  .validator((input: PlanInput) => input)
+  .handler(async ({ data }): Promise<{ ok: true; board: Storyboard } | { ok: false; error: string }> => {
+    const key = apiKey();
+    if (!key) return { ok: false, error: "AI is not available in this environment." };
+    const brief = data.brief.trim();
+    if (brief.length < 8) return { ok: false, error: "Give the director a bit more to work with." };
+    if (brief.length > 4000) return { ok: false, error: "Brief is too long. Keep it under 4,000 characters." };
+    const user = [
+      `Mode: ${data.mode === "storyboard" ? "storyboard (honor the user's shot list)" : "automatic (plan coverage)"}`,
+      `Aspect ratio: ${data.aspectRatio}`,
+      `Total duration: ${data.duration} seconds. Shot durations MUST sum to ${data.duration}.`,
+      data.continuity ? continuityUserBlock(data.continuity) : "",
+      "",
+      "Brief:",
+      brief,
+    ].filter(Boolean).join("\n");
+    const res = await fetch(`${XAI}/chat/completions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
+      body: JSON.stringify({
+        model: CHAT_MODEL,
+        temperature: 0.7,
+        max_tokens: 2500,
+        response_format: { type: "json_object" },
+        messages: [
+          { role: "system", content: DIRECTOR_SYSTEM },
+          { role: "user", content: user },
+        ],
+      }),
+    });
+    if (!res.ok) return { ok: false, error: `Director is unavailable (${res.status}).` };
+    const body = (await res.json()) as { choices?: { message?: { content?: string } }[] };
+    const text = body.choices?.[0]?.message?.content ?? "";
+    try {
+      return { ok: true, board: parseBoard(extractJson(text), data.duration, data.continuity) };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : "Could not parse the storyboard." };
+    }
+  });
+
+function imagePayload(dataUrl: string): { url: string } | { b64_json: string } {
+  const match = dataUrl.match(/^data:image\/\w+;base64,(.+)$/);
+  if (match?.[1]) return { b64_json: match[1] };
+  return { url: dataUrl };
+}
+
+async function startGeneration(
+  key: string,
+  model: string,
+  data: StartVideoInput,
+  withImage: boolean,
+): Promise<{ ok: true; requestId: string } | { ok: false; error: string; status: number }> {
+  const duration = Math.min(15, Math.max(1, Math.round(data.duration)));
+  const body: Record<string, unknown> = {
+    model,
+    prompt: data.prompt.slice(0, 8000),
+    duration,
+    aspect_ratio: data.aspectRatio,
+    resolution: "720p",
+    generate_audio: true,
+  };
+  if (withImage && data.startImageDataUrl) body.image = imagePayload(data.startImageDataUrl);
+  const res = await fetch(`${XAI}/videos/generations`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) return { ok: false, error: `Imagine returned ${res.status}.`, status: res.status };
+  const payload = (await res.json()) as { request_id?: string; id?: string };
+  const requestId = payload.request_id ?? payload.id;
+  if (!requestId) return { ok: false, error: "Imagine did not start the job.", status: res.status };
+  return { ok: true, requestId };
+}
+
+export const startVideo = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
+  .validator((input: StartVideoInput) => input)
+  .handler(async ({ data }): Promise<{ ok: true; requestId: string } | { ok: false; error: string }> => {
+    const key = apiKey();
+    if (!key) return { ok: false, error: "AI is not available in this environment." };
+    if (!data.prompt.trim()) return { ok: false, error: "Nothing to roll — the prompt is empty." };
+    const useImage = Boolean(data.startImageDataUrl);
+    const first = await startGeneration(key, VIDEO_MODEL, data, useImage);
+    if (first.ok) return first;
+    if (useImage && (first.status === 400 || first.status === 422)) {
+      const noImage = await startGeneration(key, VIDEO_MODEL, data, false);
+      if (noImage.ok) return noImage;
+    }
+    if (first.status === 404 || first.status === 400) {
+      const retry = await startGeneration(key, VIDEO_FALLBACK, data, useImage);
+      if (retry.ok) return retry;
+      return { ok: false, error: retry.error };
+    }
+    return { ok: false, error: first.error };
+  });
+
+type VideoStatus = {
+  status: "queued" | "processing" | "done" | "failed" | "expired";
+  url: string | null;
+  error: string | null;
+};
+
+function mapStatus(raw: string | undefined): VideoStatus["status"] {
+  const s = (raw ?? "").toLowerCase();
+  if (s === "done" || s === "succeeded" || s === "completed" || s === "success") return "done";
+  if (s === "failed" || s === "error") return "failed";
+  if (s === "expired") return "expired";
+  if (s === "queued" || s === "pending" || s === "created") return "queued";
+  return "processing";
+}
+
+export const pollVideo = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
+  .validator((input: { requestId: string }) => input)
+  .handler(async ({ data }): Promise<{ ok: true } & VideoStatus | { ok: false; error: string }> => {
+    const key = apiKey();
+    if (!key) return { ok: false, error: "AI is not available in this environment." };
+    const id = data.requestId.trim();
+    if (!id) return { ok: false, error: "Missing generation id." };
+    const res = await fetch(`${XAI}/videos/${encodeURIComponent(id)}`, {
+      headers: { Authorization: `Bearer ${key}` },
+    });
+    if (!res.ok) return { ok: false, error: `Could not check the roll (${res.status}).` };
+    const body = (await res.json()) as {
+      status?: string;
+      error?: string | { message?: string };
+      video?: { url?: string };
+      url?: string;
+    };
+    const status = mapStatus(body.status);
+    const url = body.video?.url ?? body.url ?? null;
+    const errText =
+      typeof body.error === "string"
+        ? body.error
+        : body.error?.message ?? (status === "failed" ? "Generation failed." : null);
+    return { ok: true, status, url, error: errText };
+  });
+
+export const grabLastFrame = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
+  .validator((input: { videoUrl: string }) => input)
+  .handler(async ({ context, data }): Promise<{ ok: true; dataUrl: string } | { ok: false; error: string }> => {
+    const url = data.videoUrl.trim();
+    let buf: Buffer | null = null;
+    if (url.startsWith("/api/media/")) {
+      const parsed = new URL(url, "http://director.local");
+      const id = parsed.pathname.split("/").pop() ?? "";
+      const access = parsed.searchParams.get("k") ?? "";
+      if (id && access) {
+        const { getSql } = await import("@/lib/db");
+        const sql = await getSql();
+        const rows = await sql<{ storage: string; object_key: string | null; user_id: string }>`
+          select storage, object_key, user_id from director_takes
+          where id = ${id} and access_key = ${access} and user_id = ${context.userId}
+          limit 1
+        `;
+        const take = rows[0];
+        if (take?.storage === "db") {
+          const blobs = await sql<{ body: Buffer | Uint8Array }>`
+            select body from director_take_blobs where take_id = ${id} and user_id = ${context.userId} limit 1
+          `;
+          const raw = blobs[0]?.body;
+          if (raw) buf = Buffer.from(raw);
+        } else if (take?.object_key) {
+          const { getMedia } = await import("./bucket");
+          buf = await getMedia(take.storage, take.object_key);
+        }
+      }
+    } else if (url.startsWith("https://")) {
+      const res = await fetch(url);
+      if (!res.ok) return { ok: false, error: "Previous take is no longer available." };
+      buf = Buffer.from(await res.arrayBuffer());
+    } else {
+      return { ok: false, error: "Invalid video." };
+    }
+    if (!buf) return { ok: false, error: "Previous take is no longer available." };
+    const { execFile } = await import("node:child_process");
+    const { mkdtemp, readFile, rm, writeFile } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { promisify } = await import("node:util");
+    const execFileAsync = promisify(execFile);
+    const dir = await mkdtemp(join(tmpdir(), "director-frame-"));
+    try {
+      const input = join(dir, "in.mp4");
+      const output = join(dir, "out.jpg");
+      await writeFile(input, buf);
+      await execFileAsync("ffmpeg", ["-y", "-sseof", "-0.4", "-i", input, "-frames:v", "1", "-q:v", "5", output], { timeout: 20000 });
+      const jpg = await readFile(output);
+      if (jpg.length > 900_000) return { ok: false, error: "Frame too large." };
+      return { ok: true, dataUrl: `data:image/jpeg;base64,${jpg.toString("base64")}` };
+    } catch {
+      return { ok: false, error: "Couldn't pull the last frame." };
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
