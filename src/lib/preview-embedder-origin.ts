@@ -48,7 +48,9 @@ export function resolveParentEmbedderOrigin(
       ) {
         return url.origin;
       }
-    } catch {}
+    } catch {
+      // try next candidate
+    }
   }
   return null;
 }

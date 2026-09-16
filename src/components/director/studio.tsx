@@ -19,11 +19,26 @@ import { sceneNumber, type Shot, type VideoJob } from "@/lib/director/types";
 
 export function Studio() {
   const {
-    current, projects, planning, planError, newProject, continueScene, loadProject,
-    setBrief, setMode, setAspect, setDuration, setBoard, updateShot, setSequenceJob,
-    setShotJob, setPlanning, hydrateFromCloud,
+    current,
+    projects,
+    planning,
+    planError,
+    newProject,
+    continueScene,
+    loadProject,
+    setBrief,
+    setMode,
+    setAspect,
+    setDuration,
+    setBoard,
+    updateShot,
+    setSequenceJob,
+    setShotJob,
+    setPlanning,
+    hydrateFromCloud,
   } = useDirector();
   const project = current();
+
   const [ready, setReady] = useState(false);
   const [aiReady, setAiReady] = useState<boolean | null>(null);
   const [busyKind, setBusyKind] = useState<"sequence" | "shot" | null>(null);
@@ -33,7 +48,9 @@ export function Studio() {
 
   useEffect(() => {
     const ensure = () => {
-      if (!useDirector.getState().currentId) useDirector.getState().newProject();
+      if (!useDirector.getState().currentId) {
+        useDirector.getState().newProject();
+      }
       setReady(true);
     };
     if (useDirector.persist.hasHydrated()) ensure();
@@ -41,12 +58,18 @@ export function Studio() {
   }, []);
 
   useEffect(() => {
-    checkAi().then((r) => setAiReady(r.ok)).catch(() => setAiReady(false));
+    checkAi()
+      .then((r) => setAiReady(r.ok))
+      .catch(() => setAiReady(false));
   }, []);
 
   useEffect(() => {
     if (!ready) return;
-    listScenes().then((res) => { if (res.ok) hydrateFromCloud(res.projects); }).catch(() => {});
+    listScenes()
+      .then((res) => {
+        if (res.ok) hydrateFromCloud(res.projects);
+      })
+      .catch(() => {});
   }, [ready, hydrateFromCloud]);
 
   useEffect(() => {
@@ -59,13 +82,18 @@ export function Studio() {
     return () => window.clearTimeout(timer);
   }, [ready, project.id, project.updatedAt]);
 
-  useEffect(() => () => stopWatch.current?.(), []);
+  useEffect(() => {
+    return () => stopWatch.current?.();
+  }, []);
 
   useEffect(() => {
     if (!ready) return;
     const job = project.sequence;
-    if (!job || job.status === "done" || job.status === "failed" || job.status === "expired") return;
+    if (!job || job.status === "done" || job.status === "failed" || job.status === "expired") {
+      return;
+    }
     beginWatch(job.requestId, job.kind, job.shotId, (next) => setSequenceJob({ ...job, ...next }));
+    // resume an in-flight roll after refresh
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready, project.id]);
 
@@ -87,17 +115,31 @@ export function Studio() {
       try {
         const blob = await fetch(archived.playUrl).then((r) => r.blob());
         await vaultPut(archived.takeId, blob);
-      } catch {}
+      } catch {
+        /* vault is best-effort */
+      }
       return { ...merged, url: archived.playUrl, takeId: archived.takeId };
     } catch {
       return merged;
     }
   }
 
-  function beginWatch(requestId: string, kind: VideoJob["kind"], shotId: string | null, apply: (next: VideoJob) => void) {
+  function beginWatch(
+    requestId: string,
+    kind: VideoJob["kind"],
+    shotId: string | null,
+    apply: (next: VideoJob) => void,
+  ) {
     stopWatch.current?.();
     const seed: VideoJob = {
-      requestId, status: "queued", url: null, error: null, kind, shotId, startedAt: Date.now(), takeId: null,
+      requestId,
+      status: "queued",
+      url: null,
+      error: null,
+      kind,
+      shotId,
+      startedAt: Date.now(),
+      takeId: null,
     };
     stopWatch.current = watchJob(requestId, (next) => {
       void lockTake(seed, next).then((job) => apply(job));
@@ -105,7 +147,10 @@ export function Studio() {
   }
 
   async function onPlan() {
-    if (aiReady === false) { toast.error("AI is not available in this environment."); return; }
+    if (aiReady === false) {
+      toast.error("AI is not available in this environment.");
+      return;
+    }
     setPlanning(true, null);
     const continuity = project.continuity
       ? {
@@ -125,7 +170,11 @@ export function Studio() {
         continuity,
       },
     });
-    if (!result.ok) { setPlanning(false, result.error); toast.error(result.error); return; }
+    if (!result.ok) {
+      setPlanning(false, result.error);
+      toast.error(result.error);
+      return;
+    }
     setBoard(result.board);
     setPlanning(false, null);
     toast.success("Coverage is locked.");
@@ -138,7 +187,10 @@ export function Studio() {
 
   async function rollSequence() {
     if (!project.board) return;
-    if (aiReady === false) { toast.error("AI is not available in this environment."); return; }
+    if (aiReady === false) {
+      toast.error("AI is not available in this environment.");
+      return;
+    }
     setBusyKind("sequence");
     const result = await startVideo({
       data: {
@@ -148,15 +200,28 @@ export function Studio() {
         startImageDataUrl: project.continuity?.lastFrameDataUrl ?? null,
       },
     });
-    if (!result.ok) { setBusyKind(null); toast.error(result.error); return; }
+    if (!result.ok) {
+      setBusyKind(null);
+      toast.error(result.error);
+      return;
+    }
     const job: VideoJob = {
-      requestId: result.requestId, status: "queued", url: null, error: null,
-      kind: "sequence", shotId: null, startedAt: Date.now(), takeId: null,
+      requestId: result.requestId,
+      status: "queued",
+      url: null,
+      error: null,
+      kind: "sequence",
+      shotId: null,
+      startedAt: Date.now(),
+      takeId: null,
     };
     setSequenceJob(job);
     beginWatch(result.requestId, "sequence", null, (next) => {
       setSequenceJob(next);
-      if (next.status === "done") { setBusyKind(null); toast.success("Take is in and archived."); }
+      if (next.status === "done") {
+        setBusyKind(null);
+        toast.success("Take is in and archived.");
+      }
       if (next.status === "failed" || next.status === "expired") {
         setBusyKind(null);
         toast.error(next.error || "The take failed.");
@@ -166,21 +231,37 @@ export function Studio() {
 
   async function rollShot(shot: Shot) {
     if (!project.board) return;
-    if (aiReady === false) { toast.error("AI is not available in this environment."); return; }
+    if (aiReady === false) {
+      toast.error("AI is not available in this environment.");
+      return;
+    }
     const duration = Math.min(15, Math.max(1, shot.duration));
     const prompt = shot.prompt || composeShotPrompt(project.board, shot);
     setBusyKind("shot");
     setBusyShotId(shot.id);
     const result = await startVideo({
       data: {
-        prompt, duration, aspectRatio: project.aspectRatio,
+        prompt,
+        duration,
+        aspectRatio: project.aspectRatio,
         startImageDataUrl: project.continuity?.lastFrameDataUrl ?? null,
       },
     });
-    if (!result.ok) { setBusyKind(null); setBusyShotId(null); toast.error(result.error); return; }
+    if (!result.ok) {
+      setBusyKind(null);
+      setBusyShotId(null);
+      toast.error(result.error);
+      return;
+    }
     const job: VideoJob = {
-      requestId: result.requestId, status: "queued", url: null, error: null,
-      kind: "shot", shotId: shot.id, startedAt: Date.now(), takeId: null,
+      requestId: result.requestId,
+      status: "queued",
+      url: null,
+      error: null,
+      kind: "shot",
+      shotId: shot.id,
+      startedAt: Date.now(),
+      takeId: null,
     };
     setShotJob(shot.id, job);
     beginWatch(result.requestId, "shot", shot.id, (next) => {
@@ -202,7 +283,10 @@ export function Studio() {
     }
     const next = continueScene(lastFrame);
     setContinuing(false);
-    if (!next) { toast.error("Board a scene before continuing."); return; }
+    if (!next) {
+      toast.error("Board a scene before continuing.");
+      return;
+    }
     toast.success(
       lastFrame
         ? `Scene ${sceneNumber(next)} is on the desk. Last frame is locked.`
@@ -234,21 +318,31 @@ export function Studio() {
             <Clapperboard className="size-5 text-fg" />
             <div>
               <p className="font-display text-2xl leading-none tracking-tight">Director</p>
-              <p className="mt-1 text-[11px] uppercase tracking-[0.2em] text-subtle">Grok Imagine</p>
+              <p className="mt-1 text-[11px] uppercase tracking-[0.2em] text-subtle">
+                Grok Imagine
+              </p>
             </div>
           </div>
           <div className="flex items-center gap-2">
             <UserButton />
-            <Button type="button" variant="secondary" size="sm" disabled={!canContinue} onClick={onContinue}>
+            <Button
+              type="button"
+              variant="secondary"
+              size="sm"
+              disabled={!canContinue}
+              onClick={onContinue}
+            >
               {continuing ? <LoaderCircle className="size-4 animate-spin" /> : null}
               Next scene
             </Button>
             <Button type="button" variant="ghost" size="sm" onClick={() => newProject()}>
-              <Plus className="size-4" /> New reel
+              <Plus className="size-4" />
+              New reel
             </Button>
           </div>
         </div>
       </header>
+
       <main className="mx-auto grid max-w-6xl gap-8 px-4 py-8 sm:px-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.05fr)] lg:gap-10">
         <section className="flex flex-col gap-6">
           <div>
@@ -262,70 +356,198 @@ export function Studio() {
                 : "Grok directs coverage like a DP — shots, camera, dialogue, sound. Imagine exposes a multi-shot clip from that board."}
             </p>
           </div>
+
           <SceneStrip project={project} projects={projects} onSelect={loadProject} />
+
           {project.continuity ? (
             <div className="flex gap-3 rounded-xl border border-border bg-surface p-4">
               {project.continuity.lastFrameDataUrl ? (
-                <img src={project.continuity.lastFrameDataUrl} alt="" className="size-16 shrink-0 rounded-md object-cover" />
+                <img
+                  src={project.continuity.lastFrameDataUrl}
+                  alt=""
+                  className="size-16 shrink-0 rounded-md object-cover"
+                />
               ) : null}
               <div className="min-w-0">
-                <p className="text-xs font-medium uppercase tracking-widest text-subtle">Continuing scene {String(n).padStart(2, "0")}</p>
+                <p className="text-xs font-medium uppercase tracking-widest text-subtle">
+                  Continuing scene {String(n).padStart(2, "0")}
+                </p>
                 <p className="mt-1 text-sm text-fg">{project.continuity.fromTitle}</p>
                 <p className="mt-1 text-sm text-muted">Ended on: {project.continuity.fromLastShot}</p>
               </div>
             </div>
           ) : null}
+
           {aiReady === false ? (
-            <p className="rounded-lg border border-border bg-surface px-4 py-3 text-sm text-muted">AI features are unavailable here. The desk still opens; generation is paused.</p>
+            <p className="rounded-lg border border-border bg-surface px-4 py-3 text-sm text-muted">
+              AI features are unavailable here. The desk still opens; generation is paused.
+            </p>
           ) : null}
+
           <div className="flex flex-col gap-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
-              <label htmlFor="brief" className="text-xs font-medium uppercase tracking-[0.16em] text-subtle">Scene brief</label>
-              <Segmented ariaLabel="Director mode" value={project.mode} onChange={setMode} options={[{ value: "automatic", label: "Automatic" }, { value: "storyboard", label: "Storyboard" }]} />
+              <label htmlFor="brief" className="text-xs font-medium uppercase tracking-[0.16em] text-subtle">
+                Scene brief
+              </label>
+              <Segmented
+                ariaLabel="Director mode"
+                value={project.mode}
+                onChange={setMode}
+                options={[
+                  { value: "automatic", label: "Automatic" },
+                  { value: "storyboard", label: "Storyboard" },
+                ]}
+              />
             </div>
-            <Textarea id="brief" value={project.brief} onChange={(e) => setBrief(e.target.value)} placeholder={project.continuity ? "What happens next. Same people, same world — pick up from the last shot." : project.mode === "storyboard" ? "Shot 1, 4s, wide: rainy alley, slow dolly in. Shot 2, close-up, she says\u2026" : "Who is in the frame, where, what happens, and what is said."} />
+            <Textarea
+              id="brief"
+              value={project.brief}
+              onChange={(e) => setBrief(e.target.value)}
+              placeholder={
+                project.continuity
+                  ? "What happens next. Same people, same world — pick up from the last shot."
+                  : project.mode === "storyboard"
+                    ? "Shot 1, 4s, wide: rainy alley, slow dolly in. Shot 2, close-up, she says…"
+                    : "Who is in the frame, where, what happens, and what is said."
+              }
+            />
             {!project.continuity ? (
-              <div className="flex flex-wrap gap-2">
-                {EXAMPLES.map((ex) => (
-                  <button key={ex.label} type="button" onClick={() => setBrief(ex.brief)} className="rounded-full border border-border px-3 py-1.5 text-xs text-muted hover:text-fg">{ex.label}</button>
-                ))}
-              </div>
+            <div className="flex flex-wrap gap-2">
+              {EXAMPLES.map((ex) => (
+                <button
+                  key={ex.label}
+                  type="button"
+                  onClick={() => setBrief(ex.brief)}
+                  className="rounded-full border border-border px-3 py-1.5 text-xs text-muted hover:text-fg"
+                >
+                  {ex.label}
+                </button>
+              ))}
+            </div>
             ) : (
-              <p className="text-xs text-subtle">Locked: {project.continuity.world.characters.map((c) => c.name).join(", ") || "world bible"}</p>
+              <p className="text-xs text-subtle">
+                Locked: {project.continuity.world.characters.map((c) => c.name).join(", ") || "world bible"}
+              </p>
             )}
           </div>
+
           <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
             <div className="flex flex-col gap-2">
-              <span className="text-xs font-medium uppercase tracking-[0.16em] text-subtle">Format</span>
+              <span className="text-xs font-medium uppercase tracking-[0.16em] text-subtle">
+                Format
+              </span>
               <div className="flex flex-wrap gap-2">
-                <Segmented ariaLabel="Aspect ratio" value={project.aspectRatio} onChange={setAspect} options={[{ value: "16:9", label: "16:9" }, { value: "9:16", label: "9:16" }, { value: "1:1", label: "1:1" }]} />
-                <Segmented ariaLabel="Duration" value={project.duration} onChange={setDuration} options={[{ value: 6, label: "6s" }, { value: 10, label: "10s" }, { value: 15, label: "15s" }]} />
+                <Segmented
+                  ariaLabel="Aspect ratio"
+                  value={project.aspectRatio}
+                  onChange={setAspect}
+                  options={[
+                    { value: "16:9", label: "16:9" },
+                    { value: "9:16", label: "9:16" },
+                    { value: "1:1", label: "1:1" },
+                  ]}
+                />
+                <Segmented
+                  ariaLabel="Duration"
+                  value={project.duration}
+                  onChange={setDuration}
+                  options={[
+                    { value: 6, label: "6s" },
+                    { value: 10, label: "10s" },
+                    { value: 15, label: "15s" },
+                  ]}
+                />
               </div>
             </div>
             <Button type="button" size="lg" disabled={!canPlan} onClick={onPlan}>
-              {planning ? (<><LoaderCircle className="size-4 animate-spin" /> Blocking</>) : "Call Director"}
+              {planning ? (
+                <>
+                  <LoaderCircle className="size-4 animate-spin" />
+                  Blocking
+                </>
+              ) : (
+                "Call Director"
+              )}
             </Button>
           </div>
+
           {planError ? <p className="text-sm text-danger">{planError}</p> : null}
+
+          {ready && projects.length > 1 ? (
+            <div className="flex flex-col gap-2">
+              <p className="text-xs font-medium uppercase tracking-[0.16em] text-subtle">
+                Recent
+              </p>
+              <ul className="flex flex-col gap-1">
+                {projects.slice(0, 5).map((p) => (
+                  <li key={p.id}>
+                    <button
+                      type="button"
+                      onClick={() => loadProject(p.id)}
+                      className="w-full truncate rounded-md px-2 py-2 text-left text-sm text-muted hover:bg-raised hover:text-fg"
+                    >
+                      {p.board?.title || p.brief.slice(0, 72) || "Untitled scene"}
+                      {p.sceneIndex && p.sceneIndex > 1 ? ` · Scene ${p.sceneIndex}` : ""}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
         </section>
+
         <section className="flex flex-col gap-8">
           {project.board ? (
             <div id="storyboard" className="flex flex-col gap-4">
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
-                  <p className="text-xs font-medium uppercase tracking-[0.16em] text-subtle">Storyboard · Scene {String(n).padStart(2, "0")}</p>
-                  <h2 className="mt-1 font-display text-2xl tracking-tight">{project.board.title}</h2>
+                  <p className="text-xs font-medium uppercase tracking-[0.16em] text-subtle">
+                    Storyboard · Scene {String(n).padStart(2, "0")}
+                  </p>
+                  <h2 className="mt-1 font-display text-2xl tracking-tight">
+                    {project.board.title}
+                  </h2>
                 </div>
                 <div className="flex flex-wrap gap-2">
-                  <Button type="button" variant="secondary" size="sm" onClick={copyPrompt}><Copy className="size-3.5" /> Copy prompt</Button>
-                  <Button type="button" size="sm" disabled={!canRoll} onClick={rollSequence}>
-                    {busyKind === "sequence" ? (<><LoaderCircle className="size-3.5 animate-spin" /> Rolling</>) : "Roll camera"}
+                  <Button type="button" variant="secondary" size="sm" onClick={copyPrompt}>
+                    <Copy className="size-3.5" />
+                    Copy prompt
                   </Button>
-                  <Button type="button" variant="secondary" size="sm" disabled={!canContinue} onClick={onContinue}>Next scene</Button>
+                  <Button type="button" size="sm" disabled={!canRoll} onClick={rollSequence}>
+                    {busyKind === "sequence" ? (
+                      <>
+                        <LoaderCircle className="size-3.5 animate-spin" />
+                        Rolling
+                      </>
+                    ) : (
+                      "Roll camera"
+                    )}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    size="sm"
+                    disabled={!canContinue}
+                    onClick={onContinue}
+                  >
+                    Next scene
+                  </Button>
                 </div>
               </div>
-              <p className="text-sm text-muted">{project.board.world.style}. {project.board.audio}</p>
-              <ShotList board={project.board} shotJobs={project.shotJobs} onChange={updateShot} onRollShot={rollShot} rollingId={busyKind === "shot" ? busyShotId : null} />
+              <p className="text-sm text-muted">
+                {project.board.world.style}. {project.board.audio}
+              </p>
+              <ShotList
+                board={project.board}
+                shotJobs={project.shotJobs}
+                onChange={updateShot}
+                onRollShot={rollShot}
+                rollingId={busyKind === "shot" ? busyShotId : null}
+              />
+              <p className="text-xs text-subtle">
+                Roll camera generates one {project.duration}s sequence from the full board.
+                Next scene carries faces, wardrobe, and the ending beat into the following clip.
+              </p>
             </div>
           ) : (
             <div className="rounded-xl border border-dashed border-border px-5 py-8 text-sm text-muted">
@@ -334,7 +556,12 @@ export function Studio() {
                 : "Automatic mode lets Grok choose coverage. Storyboard mode follows the shots you write in the brief."}
             </div>
           )}
-          <Monitor aspect={project.aspectRatio} job={project.sequence} title={project.board?.logline} />
+
+          <Monitor
+            aspect={project.aspectRatio}
+            job={project.sequence}
+            title={project.board?.logline}
+          />
         </section>
       </main>
     </div>

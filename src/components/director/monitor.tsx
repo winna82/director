@@ -48,7 +48,9 @@ export function Monitor({
   return (
     <div className="flex flex-col gap-3">
       <div className="flex items-center justify-between gap-3">
-        <p className="text-xs font-medium uppercase tracking-widest text-subtle">Picture</p>
+        <p className="text-xs font-medium uppercase tracking-widest text-subtle">
+          Picture
+        </p>
         <div className="flex items-center gap-3">
           {src && job?.status === "done" ? (
             <Button type="button" variant="ghost" size="sm" asChild>
@@ -70,25 +72,38 @@ export function Monitor({
         )}
       >
         {src && job?.status === "done" ? (
-          <video key={src} src={src} className="size-full object-cover" controls autoPlay playsInline />
+          <video
+            key={src}
+            src={src}
+            className="size-full object-cover"
+            controls
+            autoPlay
+            playsInline
+          />
         ) : (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 px-6 text-center">
             {rolling ? (
               <>
                 <LoaderCircle className="size-6 animate-spin text-muted" />
                 <p className="font-display text-xl italic text-fg">Camera rolling</p>
-                <p className="max-w-xs text-sm text-muted">Grok Imagine is exposing the sequence. This usually takes a minute.</p>
+                <p className="max-w-xs text-sm text-muted">
+                  Grok Imagine is exposing the sequence. This usually takes a minute.
+                </p>
               </>
             ) : failed ? (
               <>
                 <p className="font-display text-xl italic text-fg">Cut</p>
-                <p className="max-w-xs text-sm text-muted">{job?.error || "The take didn't come back. Try rolling again."}</p>
+                <p className="max-w-xs text-sm text-muted">
+                  {job?.error || "The take didn't come back. Try rolling again."}
+                </p>
               </>
             ) : (
               <>
                 <Clapperboard className="size-6 text-subtle" />
                 <p className="font-display text-xl italic text-fg">Picture is not up</p>
-                <p className="max-w-xs text-sm text-muted">Call Director to block the scene, then roll camera.</p>
+                <p className="max-w-xs text-sm text-muted">
+                  Call Director to block the scene, then roll camera.
+                </p>
               </>
             )}
           </div>
@@ -100,11 +115,24 @@ export function Monitor({
 }
 
 function StatusChip({ job, archived }: { job: VideoJob | null; archived?: boolean }) {
-  if (!job) return <span className="text-xs uppercase tracking-widest text-subtle">Standby</span>;
+  if (!job) {
+    return <span className="text-xs uppercase tracking-widest text-subtle">Standby</span>;
+  }
   const label =
-    job.status === "done" ? (archived ? "Archived" : "Take ready") : job.status === "failed" || job.status === "expired" ? "Failed" : "Rolling";
+    job.status === "done"
+      ? archived
+        ? "Archived"
+        : "Take ready"
+      : job.status === "failed" || job.status === "expired"
+        ? "Failed"
+        : "Rolling";
   return (
-    <span className={cn("inline-flex items-center gap-2 text-xs uppercase tracking-widest", job.status === "done" ? "text-fg" : "text-muted")}>
+    <span
+      className={cn(
+        "inline-flex items-center gap-2 text-xs uppercase tracking-widest",
+        job.status === "done" ? "text-fg" : "text-muted",
+      )}
+    >
       {job.status !== "done" && job.status !== "failed" && job.status !== "expired" ? (
         <span className="size-1.5 rounded-full bg-rec" aria-hidden />
       ) : null}

@@ -56,19 +56,28 @@ function extractJson(text: string): unknown {
 function asString(value: unknown, fallback = ""): string {
   return typeof value === "string" ? value.trim() : fallback;
 }
+
 function asNumber(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
+
 function normalizeShotSize(value: unknown): ShotSize | string {
   const s = asString(value, "medium").toLowerCase().replace(/\s+/g, "-");
   return (SHOT_SIZES as readonly string[]).includes(s) ? (s as ShotSize) : s;
 }
 
-function parseBoard(raw: unknown, duration: ClipDuration, continuity?: ContinuityPayload | null): Storyboard {
-  if (!raw || typeof raw !== "object") throw new Error("Director returned an empty board.");
+function parseBoard(
+  raw: unknown,
+  duration: ClipDuration,
+  continuity?: ContinuityPayload | null,
+): Storyboard {
+  if (!raw || typeof raw !== "object") {
+    throw new Error("Director returned an empty board.");
+  }
   const o = raw as Record<string, unknown>;
   const worldRaw = (o.world ?? {}) as Record<string, unknown>;
   const charsRaw = Array.isArray(worldRaw.characters) ? worldRaw.characters : [];
+
   let world: WorldBible = {
     setting: asString(worldRaw.setting, "unspecified interior"),
     lighting: asString(worldRaw.lighting, "natural motivated light"),
@@ -84,9 +93,16 @@ function parseBoard(raw: unknown, duration: ClipDuration, continuity?: Continuit
       })
       .filter((c): c is { name: string; look: string } => Boolean(c)),
   };
-  if (continuity) world = lockWorld(world, continuity.world);
+
+  if (continuity) {
+    world = lockWorld(world, continuity.world);
+  }
+
   const shotsRaw = Array.isArray(o.shots) ? o.shots : [];
-  if (shotsRaw.length < 1) throw new Error("Director returned no shots.");
+  if (shotsRaw.length < 1) {
+    throw new Error("Director returned no shots.");
+  }
+
   const shots: Shot[] = shotsRaw.slice(0, 6).map((item, i) => {
     const s = (item ?? {}) as Record<string, unknown>;
     const dialogueRaw = s.dialogue;
@@ -110,18 +126,21 @@ function parseBoard(raw: unknown, duration: ClipDuration, continuity?: Continuit
       prompt: asString(s.prompt),
     };
   });
+
   const sum = shots.reduce((n, s) => n + s.duration, 0);
   if (sum !== duration && sum > 0) {
     const scale = duration / sum;
     let used = 0;
     shots.forEach((shot, i) => {
-      if (i === shots.length - 1) shot.duration = Math.max(1, duration - used);
-      else {
+      if (i === shots.length - 1) {
+        shot.duration = Math.max(1, duration - used);
+      } else {
         shot.duration = Math.max(1, Math.round(shot.duration * scale));
         used += shot.duration;
       }
     });
   }
+
   const board: Storyboard = {
     title: asString(o.title, "Untitled scene"),
     logline: asString(o.logline),
@@ -142,7 +161,9 @@ function parseBoard(raw: unknown, duration: ClipDuration, continuity?: Continuit
 }
 
 function continuityUserBlock(c: ContinuityPayload): string {
-  const faces = c.world.characters.map((ch) => `- ${ch.name}: ${ch.look}`).join("\n");
+  const faces = c.world.characters
+    .map((ch) => `- ${ch.name}: ${ch.look}`)
+    .join("\n");
   return [
     `CONTINUATION — next scene of the same film.`,
     `Previous scene title: ${c.fromTitle}`,
@@ -169,9 +190,11 @@ export const planStoryboard = createServerFn({ method: "POST" })
   .handler(async ({ data }): Promise<{ ok: true; board: Storyboard } | { ok: false; error: string }> => {
     const key = apiKey();
     if (!key) return { ok: false, error: "AI is not available in this environment." };
+
     const brief = data.brief.trim();
     if (brief.length < 8) return { ok: false, error: "Give the director a bit more to work with." };
     if (brief.length > 4000) return { ok: false, error: "Brief is too long. Keep it under 4,000 characters." };
+
     const user = [
       `Mode: ${data.mode === "storyboard" ? "storyboard (honor the user's shot list)" : "automatic (plan coverage)"}`,
       `Aspect ratio: ${data.aspectRatio}`,
@@ -180,10 +203,16 @@ export const planStoryboard = createServerFn({ method: "POST" })
       "",
       "Brief:",
       brief,
-    ].filter(Boolean).join("\n");
+    ]
+      .filter(Boolean)
+      .join("\n");
+
     const res = await fetch(`${XAI}/chat/completions`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${key}`,
+      },
       body: JSON.stringify({
         model: CHAT_MODEL,
         temperature: 0.7,
@@ -195,13 +224,21 @@ export const planStoryboard = createServerFn({ method: "POST" })
         ],
       }),
     });
-    if (!res.ok) return { ok: false, error: `Director is unavailable (${res.status}).` };
-    const body = (await res.json()) as { choices?: { message?: { content?: string } }[] };
+
+    if (!res.ok) {
+      return { ok: false, error: `Director is unavailable (${res.status}).` };
+    }
+
+    const body = (await res.json()) as {
+      choices?: { message?: { content?: string } }[];
+    };
     const text = body.choices?.[0]?.message?.content ?? "";
     try {
-      return { ok: true, board: parseBoard(extractJson(text), data.duration, data.continuity) };
+      const board = parseBoard(extractJson(text), data.duration, data.continuity);
+      return { ok: true, board };
     } catch (err) {
-      return { ok: false, error: err instanceof Error ? err.message : "Could not parse the storyboard." };
+      const message = err instanceof Error ? err.message : "Could not parse the storyboard.";
+      return { ok: false, error: message };
     }
   });
 
@@ -226,13 +263,23 @@ async function startGeneration(
     resolution: "720p",
     generate_audio: true,
   };
-  if (withImage && data.startImageDataUrl) body.image = imagePayload(data.startImageDataUrl);
+  if (withImage && data.startImageDataUrl) {
+    body.image = imagePayload(data.startImageDataUrl);
+  }
+
   const res = await fetch(`${XAI}/videos/generations`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${key}`,
+    },
     body: JSON.stringify(body),
   });
-  if (!res.ok) return { ok: false, error: `Imagine returned ${res.status}.`, status: res.status };
+
+  if (!res.ok) {
+    return { ok: false, error: `Imagine returned ${res.status}.`, status: res.status };
+  }
+
   const payload = (await res.json()) as { request_id?: string; id?: string };
   const requestId = payload.request_id ?? payload.id;
   if (!requestId) return { ok: false, error: "Imagine did not start the job.", status: res.status };
@@ -246,6 +293,7 @@ export const startVideo = createServerFn({ method: "POST" })
     const key = apiKey();
     if (!key) return { ok: false, error: "AI is not available in this environment." };
     if (!data.prompt.trim()) return { ok: false, error: "Nothing to roll — the prompt is empty." };
+
     const useImage = Boolean(data.startImageDataUrl);
     const first = await startGeneration(key, VIDEO_MODEL, data, useImage);
     if (first.ok) return first;
@@ -284,22 +332,29 @@ export const pollVideo = createServerFn({ method: "POST" })
     if (!key) return { ok: false, error: "AI is not available in this environment." };
     const id = data.requestId.trim();
     if (!id) return { ok: false, error: "Missing generation id." };
+
     const res = await fetch(`${XAI}/videos/${encodeURIComponent(id)}`, {
       headers: { Authorization: `Bearer ${key}` },
     });
-    if (!res.ok) return { ok: false, error: `Could not check the roll (${res.status}).` };
+
+    if (!res.ok) {
+      return { ok: false, error: `Could not check the roll (${res.status}).` };
+    }
+
     const body = (await res.json()) as {
       status?: string;
       error?: string | { message?: string };
       video?: { url?: string };
       url?: string;
     };
+
     const status = mapStatus(body.status);
     const url = body.video?.url ?? body.url ?? null;
     const errText =
       typeof body.error === "string"
         ? body.error
         : body.error?.message ?? (status === "failed" ? "Generation failed." : null);
+
     return { ok: true, status, url, error: errText };
   });
 
@@ -309,6 +364,7 @@ export const grabLastFrame = createServerFn({ method: "POST" })
   .handler(async ({ context, data }): Promise<{ ok: true; dataUrl: string } | { ok: false; error: string }> => {
     const url = data.videoUrl.trim();
     let buf: Buffer | null = null;
+
     if (url.startsWith("/api/media/")) {
       const parsed = new URL(url, "http://director.local");
       const id = parsed.pathname.split("/").pop() ?? "";
@@ -340,19 +396,26 @@ export const grabLastFrame = createServerFn({ method: "POST" })
     } else {
       return { ok: false, error: "Invalid video." };
     }
+
     if (!buf) return { ok: false, error: "Previous take is no longer available." };
+
     const { execFile } = await import("node:child_process");
     const { mkdtemp, readFile, rm, writeFile } = await import("node:fs/promises");
     const { tmpdir } = await import("node:os");
     const { join } = await import("node:path");
     const { promisify } = await import("node:util");
     const execFileAsync = promisify(execFile);
+
     const dir = await mkdtemp(join(tmpdir(), "director-frame-"));
     try {
       const input = join(dir, "in.mp4");
       const output = join(dir, "out.jpg");
       await writeFile(input, buf);
-      await execFileAsync("ffmpeg", ["-y", "-sseof", "-0.4", "-i", input, "-frames:v", "1", "-q:v", "5", output], { timeout: 20000 });
+      await execFileAsync(
+        "ffmpeg",
+        ["-y", "-sseof", "-0.4", "-i", input, "-frames:v", "1", "-q:v", "5", output],
+        { timeout: 20000 },
+      );
       const jpg = await readFile(output);
       if (jpg.length > 900_000) return { ok: false, error: "Frame too large." };
       return { ok: true, dataUrl: `data:image/jpeg;base64,${jpg.toString("base64")}` };

@@ -85,7 +85,7 @@ export function LoginPanel({ callbackURL = "/" }: { callbackURL?: string }) {
         </label>
         {error ? <p className="text-sm text-danger">{error}</p> : null}
         <Button type="submit" disabled={busy} className="w-full">
-          {busy ? "Working\u2026" : mode === "up" ? "Create account" : "Sign in"}
+          {busy ? "Working…" : mode === "up" ? "Create account" : "Sign in"}
         </Button>
       </form>
       <button

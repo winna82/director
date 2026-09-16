@@ -74,11 +74,24 @@ function ShotRow({
       </button>
       {open ? (
         <div className="flex flex-col gap-3 border-t border-border px-4 py-3">
-          <Field label="Camera" value={shot.camera} onChange={(v) => onChange(shot.id, { camera: v })} />
-          <Field label="Action" value={shot.action} multiline onChange={(v) => onChange(shot.id, { action: v })} />
+          <Field
+            label="Camera"
+            value={shot.camera}
+            onChange={(v) => onChange(shot.id, { camera: v })}
+          />
+          <Field
+            label="Action"
+            value={shot.action}
+            multiline
+            onChange={(v) => onChange(shot.id, { action: v })}
+          />
           <Field
             label="Dialogue"
-            value={shot.dialogue ? `${shot.dialogue.character}: ${shot.dialogue.line}` : ""}
+            value={
+              shot.dialogue
+                ? `${shot.dialogue.character}: ${shot.dialogue.line}`
+                : ""
+            }
             placeholder="Character: line"
             onChange={(v) => {
               const split = v.split(":");
@@ -89,12 +102,22 @@ function ShotRow({
               });
             }}
           />
-          <Field label="Audio" value={shot.audio} onChange={(v) => onChange(shot.id, { audio: v })} />
+          <Field
+            label="Audio"
+            value={shot.audio}
+            onChange={(v) => onChange(shot.id, { audio: v })}
+          />
           {job?.url && job.status === "done" ? (
             <video src={job.url} className="w-full rounded-md" controls playsInline />
           ) : null}
           <div className="flex justify-end">
-            <Button type="button" variant="secondary" size="sm" disabled={rolling} onClick={() => onRollShot(shot)}>
+            <Button
+              type="button"
+              variant="secondary"
+              size="sm"
+              disabled={rolling}
+              onClick={() => onRollShot(shot)}
+            >
               {rolling ? "Rolling this shot" : "Roll this shot"}
             </Button>
           </div>
@@ -121,11 +144,22 @@ function Field({
     "w-full rounded-md border border-border bg-raised px-3 py-2 text-sm text-fg placeholder:text-subtle outline-none focus-visible:ring-2 focus-visible:ring-ring";
   return (
     <label className="flex flex-col gap-1.5">
-      <span className="text-xs font-medium uppercase tracking-[0.14em] text-subtle">{label}</span>
+      <span className="text-xs font-medium uppercase tracking-[0.14em] text-subtle">
+        {label}
+      </span>
       {multiline ? (
-        <textarea className={cn(cls, "min-h-20 resize-y")} value={value} onChange={(e) => onChange(e.target.value)} />
+        <textarea
+          className={cn(cls, "min-h-20 resize-y")}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+        />
       ) : (
-        <input className={cn(cls, "h-10")} value={value} placeholder={placeholder} onChange={(e) => onChange(e.target.value)} />
+        <input
+          className={cn(cls, "h-10")}
+          value={value}
+          placeholder={placeholder}
+          onChange={(e) => onChange(e.target.value)}
+        />
       )}
     </label>
   );
