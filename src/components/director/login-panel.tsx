@@ -41,24 +41,35 @@ export function LoginPanel({ callbackURL = "/" }: { callbackURL?: string }) {
     return <p className="text-sm text-muted">Sign-in is disabled.</p>;
   }
 
+  const showGrokOAuth =
+    typeof window !== "undefined" &&
+    (window.location.hostname.endsWith(".grok-sandbox.com") ||
+      window.location.hostname.endsWith(".grok.me") ||
+      window.location.hostname === "localhost" ||
+      window.location.hostname === "127.0.0.1");
+
   return (
     <div className="flex flex-col gap-3">
-      {GROK_PROVIDERS.map((p) => (
-        <Button
-          key={p.providerId}
-          type="button"
-          variant="secondary"
-          className="w-full"
-          onClick={() => signIn(p.providerId, { callbackURL })}
-        >
-          Continue with {p.label}
-        </Button>
-      ))}
-      <div className="flex items-center gap-3 py-2">
-        <span className="h-px flex-1 bg-border" />
-        <span className="text-xs uppercase tracking-widest text-subtle">or email</span>
-        <span className="h-px flex-1 bg-border" />
-      </div>
+      {showGrokOAuth
+        ? GROK_PROVIDERS.map((p) => (
+            <Button
+              key={p.providerId}
+              type="button"
+              variant="secondary"
+              className="w-full"
+              onClick={() => signIn(p.providerId, { callbackURL })}
+            >
+              Continue with {p.label}
+            </Button>
+          ))
+        : null}
+      {showGrokOAuth ? (
+        <div className="flex items-center gap-3 py-2">
+          <span className="h-px flex-1 bg-border" />
+          <span className="text-xs uppercase tracking-widest text-subtle">or email</span>
+          <span className="h-px flex-1 bg-border" />
+        </div>
+      ) : null}
       <form className="flex flex-col gap-3" onSubmit={onEmail}>
         <label className="flex flex-col gap-1.5 text-xs font-medium uppercase tracking-widest text-subtle">
           Email
@@ -85,7 +96,7 @@ export function LoginPanel({ callbackURL = "/" }: { callbackURL?: string }) {
         </label>
         {error ? <p className="text-sm text-danger">{error}</p> : null}
         <Button type="submit" disabled={busy} className="w-full">
-          {busy ? "Working…" : mode === "up" ? "Create account" : "Sign in"}
+          {busy ? "Working\u2026" : mode === "up" ? "Create account" : "Sign in"}
         </Button>
       </form>
       <button
