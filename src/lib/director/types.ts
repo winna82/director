@@ -127,6 +127,22 @@ export function sceneNumber(project: Project): number {
   return project.sceneIndex || 1;
 }
 
+export function bySceneOrder(a: Project, b: Project): number {
+  return sceneNumber(a) - sceneNumber(b) || a.createdAt - b.createdAt;
+}
+
+/** On-screen scene number: position within the reel, so deleted scenes leave no gaps. */
+export function scenePosition(project: Project, projects: Project[]): number {
+  const reel = projects.filter((p) => reelIdOf(p) === reelIdOf(project)).sort(bySceneOrder);
+  const index = reel.findIndex((p) => p.id === project.id);
+  return index === -1 ? reel.length + 1 : index + 1;
+}
+
+/** Nothing written yet — not worth keeping in the cloud library. */
+export function isBlankDraft(project: Project): boolean {
+  return !project.brief.trim() && !project.board && !project.continuity && !project.sequence;
+}
+
 export function endingLine(board: Storyboard): string {
   const last = board.shots[board.shots.length - 1];
   if (!last) return board.logline;

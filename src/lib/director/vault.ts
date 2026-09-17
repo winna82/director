@@ -35,3 +35,15 @@ export async function vaultGet(id: string): Promise<Blob | null> {
   db.close();
   return blob;
 }
+
+export async function vaultDelete(ids: string[]): Promise<void> {
+  if (!ids.length) return;
+  const db = await openDb();
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(STORE, "readwrite");
+    for (const id of ids) tx.objectStore(STORE).delete(id);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+  db.close();
+}

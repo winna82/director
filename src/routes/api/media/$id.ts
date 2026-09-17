@@ -21,26 +21,14 @@ export const Route = createFileRoute("/api/media/$id")({
         }>`
           select id, user_id, storage, object_key, content_type
           from director_takes
-          where id = ${id} and access_key = ${key}
+          where id = ${id} and access_key = ${key} and deleted_at is null
           limit 1
         `;
         const take = rows[0];
         if (!take) return new Response("Not found", { status: 404 });
 
-        let body: Buffer | null = null;
-        if (take.storage === "db") {
-          const blobs = await sql<{ body: Buffer | Uint8Array | string }>`
-            select body from director_take_blobs
-            where take_id = ${take.id} and user_id = ${take.user_id}
-            limit 1
-          `;
-          const raw = blobs[0]?.body;
-          if (raw instanceof Uint8Array) body = Buffer.from(raw);
-          else if (typeof raw === "string") body = Buffer.from(raw, "base64");
-        } else if (take.object_key) {
-          const { getMedia } = await import("@/lib/director/bucket");
-          body = await getMedia(take.storage, take.object_key);
-        }
+        const { readTakeBytes } = await import("@/lib/director/media.server");
+        const body = await readTakeBytes(sql, take);
         if (!body) return new Response("Not found", { status: 404 });
 
         const headers = new Headers({

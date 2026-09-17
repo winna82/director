@@ -5,7 +5,7 @@ import { emptyProject, type Project } from "./types";
 
 const MAX_BYTES = 28 * 1024 * 1024;
 
-type SceneRow = {
+export type SceneRow = {
   id: string;
   reel_id: string;
   scene_index: number;
@@ -31,7 +31,10 @@ function parseJson<T>(raw: string | null, fallback: T): T {
   }
 }
 
-function rowToProject(row: SceneRow): Project {
+export const SCENE_COLUMNS = `id, reel_id, scene_index, parent_id, brief, mode, aspect_ratio, duration,
+  board_json, continuity_json, sequence_json, shot_jobs_json, created_at, updated_at`;
+
+export function rowToProject(row: SceneRow): Project {
   return emptyProject({
     id: row.id,
     reelId: row.reel_id,
@@ -52,33 +55,72 @@ function rowToProject(row: SceneRow): Project {
 
 export const listScenes = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .handler(async ({ context }): Promise<{ ok: true; projects: Project[] } | { ok: false; error: string }> => {
-    const sql = await getSql();
-    const rows = await sql<SceneRow>`
-      select id, reel_id, scene_index, parent_id, brief, mode, aspect_ratio, duration,
-             board_json, continuity_json, sequence_json, shot_jobs_json, created_at, updated_at
-      from director_scenes
-      where user_id = ${context.userId}
-      order by updated_at desc
-      limit 24
-    `;
-    return { ok: true, projects: rows.map(rowToProject) };
-  });
+  .handler(
+    async ({
+      context,
+    }): Promise<{ ok: true; projects: Project[]; deletedIds: string[] } | { ok: false; error: string }> => {
+      const sql = await getSql();
+      const rows = await sql.query<SceneRow>(
+        `select ${SCENE_COLUMNS} from director_scenes
+         where user_id = $1 and deleted_at is null
+         order by updated_at desc
+         limit 24`,
+        [context.userId],
+      );
+      // Tombstones, so browsers holding a local copy drop scenes deleted elsewhere.
+      const deleted = await sql<{ id: string }>`
+        select id from director_scenes
+        where user_id = ${context.userId} and deleted_at is not null
+        order by deleted_at desc
+        limit 200
+      `;
+      return { ok: true, projects: rows.map(rowToProject), deletedIds: deleted.map((r) => r.id) };
+    },
+  );
 
 export const saveScene = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
   .validator((input: Project) => input)
-  .handler(async ({ context, data }): Promise<{ ok: true } | { ok: false; error: string }> => {
+  .handler(async ({ context, data }): Promise<{ ok: true } | { ok: false; error: string; deleted?: true }> => {
     const project = data;
     if (!project.id || project.id === "draft") return { ok: false, error: "Nothing to save." };
     const sql = await getSql();
     const now = new Date().toISOString();
-    await sql`
+    const reelId = project.reelId || project.id;
+
+    const reel = await sql<{ id: string }>`
+      insert into director_reels (id, user_id) values (${reelId}, ${context.userId})
+      on conflict (id) do update set updated_at = now()
+      where director_reels.user_id = ${context.userId} and director_reels.deleted_at is null
+      returning id
+    `;
+    if (!reel[0]) return { ok: false, error: "This reel was deleted.", deleted: true };
+
+    // A stale tab must not point the scene back at takes deleted elsewhere.
+    const takeIds = [project.sequence?.takeId, ...Object.values(project.shotJobs ?? {}).map((j) => j?.takeId)].filter(
+      (id): id is string => Boolean(id),
+    );
+    if (takeIds.length) {
+      const gone = new Set(
+        (
+          await sql<{ id: string }>`
+            select id from director_takes
+            where user_id = ${context.userId} and id = any(${takeIds}) and deleted_at is not null
+          `
+        ).map((r) => r.id),
+      );
+      if (project.sequence?.takeId && gone.has(project.sequence.takeId)) project.sequence = null;
+      project.shotJobs = Object.fromEntries(
+        Object.entries(project.shotJobs ?? {}).filter(([, job]) => !job?.takeId || !gone.has(job.takeId)),
+      );
+    }
+
+    const saved = await sql<{ id: string }>`
       insert into director_scenes (
         id, user_id, reel_id, scene_index, parent_id, brief, mode, aspect_ratio, duration,
         board_json, continuity_json, sequence_json, shot_jobs_json, created_at, updated_at
       ) values (
-        ${project.id}, ${context.userId}, ${project.reelId || project.id}, ${project.sceneIndex || 1},
+        ${project.id}, ${context.userId}, ${reelId}, ${project.sceneIndex || 1},
         ${project.parentId}, ${project.brief}, ${project.mode}, ${project.aspectRatio}, ${project.duration},
         ${JSON.stringify(project.board)}, ${JSON.stringify(project.continuity)},
         ${JSON.stringify(project.sequence)}, ${JSON.stringify(project.shotJobs)},
@@ -97,8 +139,10 @@ export const saveScene = createServerFn({ method: "POST" })
         sequence_json = excluded.sequence_json,
         shot_jobs_json = excluded.shot_jobs_json,
         updated_at = excluded.updated_at
-      where director_scenes.user_id = ${context.userId}
+      where director_scenes.user_id = ${context.userId} and director_scenes.deleted_at is null
+      returning id
     `;
+    if (!saved[0]) return { ok: false, error: "This scene was deleted.", deleted: true };
     return { ok: true };
   });
 
@@ -125,7 +169,9 @@ export const archiveTake = createServerFn({ method: "POST" })
 
       const sql = await getSql();
       const owned = await sql<{ id: string }>`
-        select id from director_scenes where id = ${sceneId} and user_id = ${context.userId} limit 1
+        select id from director_scenes
+        where id = ${sceneId} and user_id = ${context.userId} and deleted_at is null
+        limit 1
       `;
       if (!owned[0]) return { ok: false, error: "Scene is not on your reel." };
 

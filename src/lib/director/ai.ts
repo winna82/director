@@ -361,6 +361,7 @@ export const grabFrame = createServerFn({ method: "POST" })
   .handler(async ({ context, data }): Promise<{ ok: true; dataUrl: string } | { ok: false; error: string }> => {
     const url = data.videoUrl.trim();
     let buf: Buffer | null = null;
+    const media = await import("./media.server");
 
     if (url.startsWith("/api/media/")) {
       const parsed = new URL(url, "http://director.local");
@@ -369,22 +370,12 @@ export const grabFrame = createServerFn({ method: "POST" })
       if (id && access) {
         const { getSql } = await import("@/lib/db");
         const sql = await getSql();
-        const rows = await sql<{ storage: string; object_key: string | null; user_id: string }>`
-          select storage, object_key, user_id from director_takes
-          where id = ${id} and access_key = ${access} and user_id = ${context.userId}
+        const rows = await sql<{ id: string; storage: string; object_key: string | null; user_id: string }>`
+          select id, storage, object_key, user_id from director_takes
+          where id = ${id} and access_key = ${access} and user_id = ${context.userId} and deleted_at is null
           limit 1
         `;
-        const take = rows[0];
-        if (take?.storage === "db") {
-          const blobs = await sql<{ body: Buffer | Uint8Array }>`
-            select body from director_take_blobs where take_id = ${id} and user_id = ${context.userId} limit 1
-          `;
-          const raw = blobs[0]?.body;
-          if (raw) buf = Buffer.from(raw);
-        } else if (take?.object_key) {
-          const { getMedia } = await import("./bucket");
-          buf = await getMedia(take.storage, take.object_key);
-        }
+        if (rows[0]) buf = await media.readTakeBytes(sql, rows[0]);
       }
     } else if (url.startsWith("https://")) {
       const res = await fetch(url);
@@ -396,34 +387,11 @@ export const grabFrame = createServerFn({ method: "POST" })
 
     if (!buf) return { ok: false, error: "Previous take is no longer available." };
 
-    const { execFile } = await import("node:child_process");
-    const { mkdtemp, readFile, rm, writeFile } = await import("node:fs/promises");
-    const { tmpdir } = await import("node:os");
-    const { join } = await import("node:path");
-    const { promisify } = await import("node:util");
-    const execFileAsync = promisify(execFile);
-
-    const dir = await mkdtemp(join(tmpdir(), "director-frame-"));
     try {
-      const input = join(dir, "in.mp4");
-      const output = join(dir, "out.jpg");
-      await writeFile(input, buf);
-      const at = data.atSeconds;
-      const seek =
-        typeof at === "number" && Number.isFinite(at) && at >= 0
-          ? ["-ss", Math.min(at, 60).toFixed(3)]
-          : ["-sseof", "-0.4"];
-      await execFileAsync(
-        "ffmpeg",
-        ["-y", ...seek, "-i", input, "-frames:v", "1", "-q:v", "5", output],
-        { timeout: 20000 },
-      );
-      const jpg = await readFile(output);
+      const jpg = await media.extractFrame(buf, { atSeconds: data.atSeconds });
       if (jpg.length > 900_000) return { ok: false, error: "Frame too large." };
       return { ok: true, dataUrl: `data:image/jpeg;base64,${jpg.toString("base64")}` };
     } catch {
       return { ok: false, error: "Couldn't pull that frame." };
-    } finally {
-      await rm(dir, { recursive: true, force: true });
     }
   });

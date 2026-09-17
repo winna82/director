@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 export type StoredObject = {
@@ -35,9 +35,9 @@ function diskRoot(): string {
   return process.env.MEDIA_DIR?.trim() || join(process.cwd(), ".data", "takes");
 }
 
-async function putS3(env: S3Env, key: string, body: Buffer, contentType: string) {
-  const { S3Client, PutObjectCommand } = await import("@aws-sdk/client-s3");
-  const client = new S3Client({
+async function s3Client(env: S3Env) {
+  const { S3Client } = await import("@aws-sdk/client-s3");
+  return new S3Client({
     region: env.region,
     endpoint: env.endpoint || undefined,
     credentials: {
@@ -46,6 +46,11 @@ async function putS3(env: S3Env, key: string, body: Buffer, contentType: string)
     },
     forcePathStyle: true,
   });
+}
+
+async function putS3(env: S3Env, key: string, body: Buffer, contentType: string) {
+  const { PutObjectCommand } = await import("@aws-sdk/client-s3");
+  const client = await s3Client(env);
   await client.send(
     new PutObjectCommand({
       Bucket: env.bucket,
@@ -57,16 +62,8 @@ async function putS3(env: S3Env, key: string, body: Buffer, contentType: string)
 }
 
 async function getS3(env: S3Env, key: string): Promise<Buffer> {
-  const { S3Client, GetObjectCommand } = await import("@aws-sdk/client-s3");
-  const client = new S3Client({
-    region: env.region,
-    endpoint: env.endpoint || undefined,
-    credentials: {
-      accessKeyId: env.accessKeyId,
-      secretAccessKey: env.secretAccessKey,
-    },
-    forcePathStyle: true,
-  });
+  const { GetObjectCommand } = await import("@aws-sdk/client-s3");
+  const client = await s3Client(env);
   const out = await client.send(new GetObjectCommand({ Bucket: env.bucket, Key: key }));
   const bytes = await out.Body?.transformToByteArray();
   if (!bytes) throw new Error("Empty object");
@@ -103,6 +100,21 @@ export async function getMedia(storage: string, key: string): Promise<Buffer | n
     }
   }
   return null;
+}
+
+/** Remove a stored take. Already-missing objects count as removed. */
+export async function deleteMedia(storage: string, key: string): Promise<void> {
+  if (storage === "s3") {
+    const env = s3Env();
+    if (!env) throw new Error("The bucket is not configured.");
+    const { DeleteObjectCommand } = await import("@aws-sdk/client-s3");
+    const client = await s3Client(env);
+    await client.send(new DeleteObjectCommand({ Bucket: env.bucket, Key: key }));
+    return;
+  }
+  if (storage === "disk") {
+    await rm(join(diskRoot(), key.replaceAll("/", "_")), { force: true });
+  }
 }
 
 export function bucketReady(): boolean {

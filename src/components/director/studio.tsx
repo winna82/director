@@ -1,22 +1,34 @@
-import { Clapperboard, Copy, LoaderCircle, Plus } from "lucide-react";
+import { Clapperboard, Copy, LoaderCircle, PanelLeft, Plus } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { FramePicker } from "@/components/director/frame-picker";
+import { LibraryDrawer } from "@/components/director/library-drawer";
 import { SceneStrip } from "@/components/director/scene-strip";
 import { Segmented } from "@/components/director/segmented";
 import { Monitor } from "@/components/director/monitor";
 import { watchJob } from "@/components/director/poll";
 import { ShotList } from "@/components/director/shot-list";
+import { TakeList } from "@/components/director/take-list";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { UserButton } from "@/lib/auth/gates";
 import { checkAi, grabFrame, planStoryboard, startVideo } from "@/lib/director/ai";
 import { composeShotPrompt } from "@/lib/director/compose";
 import { EXAMPLES } from "@/lib/director/examples";
+import { listReelScenes } from "@/lib/director/library";
 import { archiveTake, listScenes, saveScene } from "@/lib/director/persist";
 import { useDirector } from "@/lib/director/store";
 import { vaultPut } from "@/lib/director/vault";
-import { sceneNumber, type Shot, type VideoJob } from "@/lib/director/types";
+import { isBlankDraft, reelIdOf, scenePosition, type Shot, type VideoJob } from "@/lib/director/types";
+import { cn } from "@/lib/utils";
+
+const LIBRARY_OPEN_KEY = "director.library-open";
+
+type Busy = { sceneId: string; kind: VideoJob["kind"]; shotId: string | null };
+
+function isRolling(job: VideoJob | null | undefined): job is VideoJob {
+  return Boolean(job) && (job?.status === "queued" || job?.status === "processing");
+}
 
 export function Studio() {
   const {
@@ -33,9 +45,9 @@ export function Studio() {
     setDuration,
     setBoard,
     updateShot,
-    setSequenceJob,
-    setShotJob,
+    setJobFor,
     setContinuityFrame,
+    removeProjects,
     setPlanning,
     hydrateFromCloud,
   } = useDirector();
@@ -43,20 +55,37 @@ export function Studio() {
 
   const [ready, setReady] = useState(false);
   const [aiReady, setAiReady] = useState<boolean | null>(null);
-  const [busyKind, setBusyKind] = useState<"sequence" | "shot" | null>(null);
-  const [busyShotId, setBusyShotId] = useState<string | null>(null);
+  const [busy, setBusy] = useState<Busy | null>(null);
   const [continuing, setContinuing] = useState(false);
   const [pickingFrame, setPickingFrame] = useState(false);
   const [grabbing, setGrabbing] = useState(false);
-  const stopWatch = useRef<(() => void) | null>(null);
+  const [libraryOpen, setLibraryOpen] = useState(false);
+  // One poller per in-flight generation, keyed by request id.
+  const watchers = useRef(new Map<string, () => void>());
 
-  // The take the continuity frame comes from: the parent scene's current
-  // sequence (it may have been rolled after Next scene), else the snapshot.
+  // The take the continuity frame comes from: the parent scene's current sequence
+  // (it may have been rolled after Next scene). The whole reel is loaded, so a
+  // missing parent means it was deleted.
   const parent = project.parentId ? projects.find((p) => p.id === project.parentId) : undefined;
-  const previousTakeUrl =
-    (parent?.sequence?.status === "done" ? parent.sequence.url : null) ??
-    project.continuity?.previousVideoUrl ??
-    null;
+  const parentDeleted = Boolean(project.parentId) && !parent;
+  const previousTakeUrl = parent?.sequence?.status === "done" ? parent.sequence.url : null;
+
+  useEffect(() => {
+    try {
+      setLibraryOpen(window.localStorage.getItem(LIBRARY_OPEN_KEY) === "1");
+    } catch {
+      /* storage unavailable — start closed */
+    }
+  }, []);
+
+  function toggleLibrary(open: boolean) {
+    setLibraryOpen(open);
+    try {
+      window.localStorage.setItem(LIBRARY_OPEN_KEY, open ? "1" : "0");
+    } catch {
+      /* per-viewer convenience only */
+    }
+  }
 
   useEffect(() => {
     setPickingFrame(false);
@@ -82,8 +111,14 @@ export function Studio() {
   useEffect(() => {
     if (!ready) return;
     listScenes()
-      .then((res) => {
-        if (res.ok) hydrateFromCloud(res.projects);
+      .then(async (res) => {
+        if (!res.ok) return;
+        hydrateFromCloud(res.projects, { deletedIds: res.deletedIds });
+        // Recent scenes are capped; load the open reel in full so numbering and continuity are complete.
+        const open = useDirector.getState().current();
+        if (open.id === "draft") return;
+        const reel = await listReelScenes({ data: { reelId: reelIdOf(open) } });
+        hydrateFromCloud(reel.projects);
       })
       .catch(() => {});
   }, [ready, hydrateFromCloud]);
@@ -91,36 +126,54 @@ export function Studio() {
   useEffect(() => {
     if (!ready) return;
     const p = useDirector.getState().current();
-    if (p.id === "draft") return;
+    if (p.id === "draft" || isBlankDraft(p)) return;
     const timer = window.setTimeout(() => {
-      saveScene({ data: useDirector.getState().current() }).catch(() => {});
+      const scene = useDirector.getState().current();
+      saveScene({ data: scene })
+        .then((res) => {
+          // Deleted in another tab or device: drop the local copy instead of resurrecting it.
+          if (!res.ok && res.deleted) removeProjects([scene.id]);
+        })
+        .catch(() => {});
     }, 1000);
     return () => window.clearTimeout(timer);
-  }, [ready, project.id, project.updatedAt]);
+  }, [ready, project.id, project.updatedAt, removeProjects]);
 
   useEffect(() => {
-    return () => stopWatch.current?.();
+    const active = watchers.current;
+    return () => {
+      for (const stop of active.values()) stop();
+      active.clear();
+    };
   }, []);
 
   useEffect(() => {
     if (!ready) return;
-    const job = project.sequence;
-    if (!job || job.status === "done" || job.status === "failed" || job.status === "expired") {
-      return;
+    // Resume in-flight rolls of the open scene after a refresh or scene switch.
+    for (const job of [project.sequence, ...Object.values(project.shotJobs)]) {
+      if (isRolling(job)) beginWatch(project.id, job);
     }
-    beginWatch(job.requestId, job.kind, job.shotId, (next) => setSequenceJob({ ...job, ...next }));
-    // resume an in-flight roll after refresh
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready, project.id]);
 
-  async function lockTake(partial: VideoJob, next: Pick<VideoJob, "status" | "url" | "error">): Promise<VideoJob> {
+  function sceneById(id: string) {
+    return useDirector.getState().projects.find((p) => p.id === id);
+  }
+
+  async function lockTake(
+    sceneId: string,
+    partial: VideoJob,
+    next: Pick<VideoJob, "status" | "url" | "error">,
+  ): Promise<VideoJob> {
     const merged: VideoJob = { ...partial, ...next, takeId: partial.takeId ?? null };
     if (next.status !== "done" || !next.url || next.url.startsWith("/api/media/")) return merged;
+    const scene = sceneById(sceneId);
+    if (!scene) return merged;
     try {
-      await saveScene({ data: useDirector.getState().current() });
+      await saveScene({ data: scene });
       const archived = await archiveTake({
         data: {
-          sceneId: useDirector.getState().current().id,
+          sceneId,
           requestId: partial.requestId,
           videoUrl: next.url,
           kind: partial.kind,
@@ -140,26 +193,19 @@ export function Studio() {
     }
   }
 
-  function beginWatch(
-    requestId: string,
-    kind: VideoJob["kind"],
-    shotId: string | null,
-    apply: (next: VideoJob) => void,
-  ) {
-    stopWatch.current?.();
-    const seed: VideoJob = {
-      requestId,
-      status: "queued",
-      url: null,
-      error: null,
-      kind,
-      shotId,
-      startedAt: Date.now(),
-      takeId: null,
-    };
-    stopWatch.current = watchJob(requestId, (next) => {
-      void lockTake(seed, next).then((job) => apply(job));
+  function beginWatch(sceneId: string, seed: VideoJob, onSettled?: (job: VideoJob) => void) {
+    if (watchers.current.has(seed.requestId)) return;
+    const stop = watchJob(seed.requestId, (next) => {
+      void lockTake(sceneId, seed, next).then((job) => {
+        setJobFor(sceneId, job);
+        if (isRolling(job)) return;
+        watchers.current.delete(seed.requestId);
+        const scene = sceneById(sceneId);
+        if (scene) void saveScene({ data: scene }).catch(() => {});
+        onSettled?.(job);
+      });
     });
+    watchers.current.set(seed.requestId, stop);
   }
 
   async function onPlan() {
@@ -207,7 +253,8 @@ export function Studio() {
       toast.error("AI is not available in this environment.");
       return;
     }
-    setBusyKind("sequence");
+    const sceneId = project.id;
+    setBusy({ sceneId, kind: "sequence", shotId: null });
     const result = await startVideo({
       data: {
         prompt: project.board.sequencePrompt,
@@ -217,7 +264,7 @@ export function Studio() {
       },
     });
     if (!result.ok) {
-      setBusyKind(null);
+      setBusy(null);
       toast.error(result.error);
       return;
     }
@@ -231,17 +278,11 @@ export function Studio() {
       startedAt: Date.now(),
       takeId: null,
     };
-    setSequenceJob(job);
-    beginWatch(result.requestId, "sequence", null, (next) => {
-      setSequenceJob(next);
-      if (next.status === "done") {
-        setBusyKind(null);
-        toast.success("Take is in and archived.");
-      }
-      if (next.status === "failed" || next.status === "expired") {
-        setBusyKind(null);
-        toast.error(next.error || "The take failed.");
-      }
+    setJobFor(sceneId, job);
+    beginWatch(sceneId, job, (settled) => {
+      setBusy(null);
+      if (settled.status === "done") toast.success("Take is in and archived.");
+      else toast.error(settled.error || "The take failed.");
     });
   }
 
@@ -253,8 +294,8 @@ export function Studio() {
     }
     const duration = Math.min(15, Math.max(1, shot.duration));
     const prompt = shot.prompt || composeShotPrompt(project.board, shot);
-    setBusyKind("shot");
-    setBusyShotId(shot.id);
+    const sceneId = project.id;
+    setBusy({ sceneId, kind: "shot", shotId: shot.id });
     const result = await startVideo({
       data: {
         prompt,
@@ -265,8 +306,7 @@ export function Studio() {
       },
     });
     if (!result.ok) {
-      setBusyKind(null);
-      setBusyShotId(null);
+      setBusy(null);
       toast.error(result.error);
       return;
     }
@@ -280,13 +320,10 @@ export function Studio() {
       startedAt: Date.now(),
       takeId: null,
     };
-    setShotJob(shot.id, job);
-    beginWatch(result.requestId, "shot", shot.id, (next) => {
-      setShotJob(shot.id, next);
-      if (next.status === "done" || next.status === "failed" || next.status === "expired") {
-        setBusyKind(null);
-        setBusyShotId(null);
-      }
+    setJobFor(sceneId, job);
+    beginWatch(sceneId, job, (settled) => {
+      setBusy(null);
+      if (settled.status !== "done") toast.error(settled.error || "The shot failed.");
     });
   }
 
@@ -304,10 +341,11 @@ export function Studio() {
       toast.error("Board a scene before continuing.");
       return;
     }
+    const position = scenePosition(next, useDirector.getState().projects);
     toast.success(
       lastFrame
-        ? `Scene ${sceneNumber(next)} is on the desk. Last frame is locked.`
-        : `Scene ${sceneNumber(next)} is on the desk. Write what happens next.`,
+        ? `Scene ${position} is on the desk. Last frame is locked.`
+        : `Scene ${position} is on the desk. Write what happens next.`,
     );
     requestAnimationFrame(() => document.getElementById("brief")?.focus());
   }
@@ -323,7 +361,7 @@ export function Studio() {
       }
       setContinuityFrame(frame.dataUrl);
       setPickingFrame(false);
-      toast.success(`Scene ${sceneNumber(project)} opens on the frame at ${seconds.toFixed(1)}s.`);
+      toast.success(`Scene ${n} opens on the frame at ${seconds.toFixed(1)}s.`);
     } catch {
       toast.error("Couldn't pull that frame.");
     } finally {
@@ -341,16 +379,72 @@ export function Studio() {
     }
   }
 
-  const canPlan = project.brief.trim().length >= 8 && !planning && busyKind === null && !continuing;
-  const canRoll = Boolean(project.board) && busyKind === null && !planning && !continuing;
-  const canContinue = Boolean(project.board) && busyKind === null && !planning && !continuing;
-  const n = sceneNumber(project);
+  function closeLibraryOnSmallScreens() {
+    if (window.innerWidth < 1024) toggleLibrary(false);
+  }
+
+  async function openReel(reelId: string) {
+    try {
+      const res = await listReelScenes({ data: { reelId } });
+      const latest = [...res.projects].sort((a, b) => b.updatedAt - a.updatedAt)[0];
+      if (!latest) {
+        toast.error("That reel has no scenes left.");
+        return;
+      }
+      hydrateFromCloud(res.projects, { focusId: latest.id });
+      closeLibraryOnSmallScreens();
+    } catch {
+      toast.error("Couldn't open the reel.");
+    }
+  }
+
+  function openScene(sceneId: string) {
+    loadProject(sceneId);
+    closeLibraryOnSmallScreens();
+  }
+
+  function startReel() {
+    newProject();
+    closeLibraryOnSmallScreens();
+    requestAnimationFrame(() => document.getElementById("brief")?.focus());
+  }
+
+  const canPlan = project.brief.trim().length >= 8 && !planning && busy === null && !continuing;
+  const canRoll = Boolean(project.board) && busy === null && !planning && !continuing;
+  const canContinue = Boolean(project.board) && busy === null && !planning && !continuing;
+  const rollingHere = busy?.sceneId === project.id ? busy : null;
+  const n = scenePosition(project, projects);
 
   return (
-    <div className="min-h-dvh bg-bg text-fg">
+    <div
+      className={cn(
+        "min-h-dvh bg-bg text-fg transition-[padding] duration-[var(--motion-fast)] ease-[var(--ease-out)]",
+        libraryOpen && "lg:pl-80",
+      )}
+    >
+      <LibraryDrawer
+        open={libraryOpen}
+        onClose={() => toggleLibrary(false)}
+        project={project}
+        projects={projects}
+        onOpenReel={(reelId) => void openReel(reelId)}
+        onOpenScene={openScene}
+        onNewReel={startReel}
+      />
       <header className="border-b border-border">
         <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-4 px-4 py-4 sm:px-6">
           <div className="flex items-center gap-3">
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              aria-label={libraryOpen ? "Close library" : "Open library"}
+              aria-expanded={libraryOpen}
+              onClick={() => toggleLibrary(!libraryOpen)}
+              className="-ml-2"
+            >
+              <PanelLeft className="size-5" />
+            </Button>
             <Clapperboard className="size-5 text-fg" />
             <div>
               <p className="font-display text-2xl leading-none tracking-tight">Director</p>
@@ -371,7 +465,7 @@ export function Studio() {
               {continuing ? <LoaderCircle className="size-4 animate-spin" /> : null}
               Next scene
             </Button>
-            <Button type="button" variant="ghost" size="sm" onClick={() => newProject()}>
+            <Button type="button" variant="ghost" size="sm" onClick={startReel}>
               <Plus className="size-4" />
               New reel
             </Button>
@@ -416,7 +510,9 @@ export function Studio() {
                       ? "The take opens on this frame."
                       : previousTakeUrl
                         ? "No opening frame — faces and wardrobe are locked by description only."
-                        : "Roll camera on the previous scene to open on one of its frames."}
+                        : parentDeleted
+                          ? "The previous scene was deleted — faces and wardrobe stay locked by description."
+                          : "Roll camera on the previous scene to open on one of its frames."}
                   </p>
                   {previousTakeUrl && !pickingFrame ? (
                     <div className="mt-2 flex flex-wrap gap-2">
@@ -424,7 +520,7 @@ export function Studio() {
                         type="button"
                         variant="secondary"
                         size="sm"
-                        disabled={busyKind !== null}
+                        disabled={busy !== null}
                         onClick={() => setPickingFrame(true)}
                       >
                         Choose frame
@@ -434,7 +530,7 @@ export function Studio() {
                           type="button"
                           variant="ghost"
                           size="sm"
-                          disabled={busyKind !== null}
+                          disabled={busy !== null}
                           onClick={() => setContinuityFrame(null)}
                         >
                           No frame
@@ -550,27 +646,6 @@ export function Studio() {
 
           {planError ? <p className="text-sm text-danger">{planError}</p> : null}
 
-          {ready && projects.length > 1 ? (
-            <div className="flex flex-col gap-2">
-              <p className="text-xs font-medium uppercase tracking-[0.16em] text-subtle">
-                Recent
-              </p>
-              <ul className="flex flex-col gap-1">
-                {projects.slice(0, 5).map((p) => (
-                  <li key={p.id}>
-                    <button
-                      type="button"
-                      onClick={() => loadProject(p.id)}
-                      className="w-full truncate rounded-md px-2 py-2 text-left text-sm text-muted hover:bg-raised hover:text-fg"
-                    >
-                      {p.board?.title || p.brief.slice(0, 72) || "Untitled scene"}
-                      {p.sceneIndex && p.sceneIndex > 1 ? ` · Scene ${p.sceneIndex}` : ""}
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          ) : null}
         </section>
 
         <section className="flex flex-col gap-8">
@@ -591,7 +666,7 @@ export function Studio() {
                     Copy prompt
                   </Button>
                   <Button type="button" size="sm" disabled={!canRoll} onClick={rollSequence}>
-                    {busyKind === "sequence" ? (
+                    {rollingHere?.kind === "sequence" ? (
                       <>
                         <LoaderCircle className="size-3.5 animate-spin" />
                         Rolling
@@ -619,7 +694,7 @@ export function Studio() {
                 shotJobs={project.shotJobs}
                 onChange={updateShot}
                 onRollShot={rollShot}
-                rollingId={busyKind === "shot" ? busyShotId : null}
+                rollingId={rollingHere?.kind === "shot" ? rollingHere.shotId : null}
               />
               <p className="text-xs text-subtle">
                 Roll camera generates one {project.duration}s sequence from the full board.
@@ -639,6 +714,8 @@ export function Studio() {
             job={project.sequence}
             title={project.board?.logline}
           />
+
+          <TakeList project={project} />
         </section>
       </main>
     </div>

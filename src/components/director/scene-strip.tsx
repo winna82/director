@@ -1,5 +1,5 @@
 import { cn } from "@/lib/utils";
-import { reelIdOf, sceneNumber, type Project } from "@/lib/director/types";
+import { bySceneOrder, reelIdOf, sceneNumber, type Project } from "@/lib/director/types";
 
 export function SceneStrip({
   project,
@@ -10,9 +10,7 @@ export function SceneStrip({
   projects: Project[];
   onSelect: (id: string) => void;
 }) {
-  const reel = projects
-    .filter((p) => reelIdOf(p) === reelIdOf(project))
-    .sort((a, b) => sceneNumber(a) - sceneNumber(b));
+  const reel = projects.filter((p) => reelIdOf(p) === reelIdOf(project)).sort(bySceneOrder);
 
   if (reel.length < 2 && sceneNumber(project) === 1 && !project.continuity) return null;
 
@@ -20,9 +18,10 @@ export function SceneStrip({
     <div className="flex flex-col gap-2">
       <p className="text-xs font-medium uppercase tracking-widest text-subtle">Reel</p>
       <div className="flex gap-2 overflow-x-auto pb-1">
-        {reel.map((p) => {
+        {reel.map((p, i) => {
           const active = p.id === project.id;
-          const n = sceneNumber(p);
+          // Numbered by position, so a deleted scene leaves no gap.
+          const n = i + 1;
           return (
             <button
               key={p.id}

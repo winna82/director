@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { composeSequencePrompt, composeShotPrompt, lockWorld } from "./compose";
 import {
+  bySceneOrder,
   emptyProject,
   endingLine,
   reelIdOf,
@@ -37,8 +38,11 @@ type DirectorState = {
   setSequenceJob: (job: VideoJob | null) => void;
   setShotJob: (shotId: string, job: VideoJob) => void;
   setContinuityFrame: (lastFrameDataUrl: string | null) => void;
+  setJobFor: (sceneId: string, job: VideoJob) => void;
+  applyTakes: (sceneId: string, sequence: VideoJob | null, shotJobs: Record<string, VideoJob>) => void;
+  removeProjects: (ids: string[]) => void;
   setPlanning: (planning: boolean, error?: string | null) => void;
-  hydrateFromCloud: (projects: Project[]) => void;
+  hydrateFromCloud: (projects: Project[], opts?: { deletedIds?: string[]; focusId?: string }) => void;
 };
 
 function touch(project: Project, partial: Partial<Project>): Project {
@@ -172,23 +176,64 @@ export const useDirector = create<DirectorState>()(
         if (!cur.continuity) return;
         get().patch({ continuity: { ...cur.continuity, lastFrameDataUrl } });
       },
-      setPlanning: (planning, error = null) => set({ planning, planError: error ?? null }),
-      hydrateFromCloud: (incoming) => {
-        if (!incoming.length) return;
+      // Rolls land on the scene that started them, even if another scene is open by then.
+      setJobFor: (sceneId, job) =>
+        set((s) => ({
+          projects: s.projects.map((p) => {
+            if (p.id !== sceneId) return p;
+            if (job.kind === "shot" && job.shotId) {
+              return { ...p, shotJobs: { ...p.shotJobs, [job.shotId]: job }, updatedAt: Date.now() };
+            }
+            return { ...p, sequence: job, updatedAt: Date.now() };
+          }),
+        })),
+      applyTakes: (sceneId, sequence, shotJobs) =>
+        set((s) => ({
+          projects: s.projects.map((p) =>
+            p.id === sceneId ? { ...p, sequence, shotJobs, updatedAt: Date.now() } : p,
+          ),
+        })),
+      removeProjects: (ids) => {
+        const gone = new Set(ids);
         set((s) => {
-          const map = new Map(s.projects.map((p) => [p.id, p]));
+          if (!s.projects.some((p) => gone.has(p.id))) return {};
+          const projects = s.projects.filter((p) => !gone.has(p.id));
+          const was = s.projects.find((p) => p.id === s.currentId);
+          if (!was || !gone.has(was.id)) return { projects };
+          // Land on the neighbouring scene of the same reel, else the latest work.
+          const reel = s.projects.filter((p) => reelIdOf(p) === reelIdOf(was)).sort(bySceneOrder);
+          const at = reel.findIndex((p) => p.id === was.id);
+          const neighbour = [...reel.slice(0, at).reverse(), ...reel.slice(at + 1)].find((p) => !gone.has(p.id));
+          const next = neighbour ?? projects[0];
+          if (next) return { projects, currentId: next.id, planError: null };
+          const fresh = emptyProject();
+          return { projects: [fresh], currentId: fresh.id, planError: null };
+        });
+      },
+      setPlanning: (planning, error = null) => set({ planning, planError: error ?? null }),
+      hydrateFromCloud: (incoming, opts = {}) => {
+        const gone = new Set(opts.deletedIds ?? []);
+        if (!incoming.length && !gone.size) return;
+        set((s) => {
+          const map = new Map(s.projects.filter((p) => !gone.has(p.id)).map((p) => [p.id, p]));
           for (const row of incoming) {
             const local = map.get(row.id);
             if (!local || row.updatedAt >= local.updatedAt) map.set(row.id, row);
           }
-          const projects = [...map.values()]
-            .sort((a, b) => b.updatedAt - a.updatedAt)
-            .slice(0, MAX_PROJECTS);
+          const focusId = opts.focusId && map.has(opts.focusId) ? opts.focusId : s.currentId;
+          const focus = focusId ? map.get(focusId) : undefined;
+          // Keep the whole focused reel even when the cap would cut some of its scenes.
+          const sorted = [...map.values()].sort((a, b) => b.updatedAt - a.updatedAt);
+          const inReel = sorted.filter((p) => focus && reelIdOf(p) === reelIdOf(focus));
+          const others = sorted.filter((p) => !focus || reelIdOf(p) !== reelIdOf(focus));
+          const projects = [...inReel, ...others.slice(0, Math.max(0, MAX_PROJECTS - inReel.length))].sort(
+            (a, b) => b.updatedAt - a.updatedAt,
+          );
           const currentId =
-            s.currentId && projects.some((p) => p.id === s.currentId)
-              ? s.currentId
-              : (projects[0]?.id ?? s.currentId);
-          return { projects, currentId };
+            focusId && projects.some((p) => p.id === focusId) ? focusId : (projects[0]?.id ?? null);
+          if (currentId) return { projects, currentId };
+          const fresh = emptyProject();
+          return { projects: [fresh], currentId: fresh.id };
         });
       },
     }),
