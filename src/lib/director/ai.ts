@@ -242,17 +242,16 @@ export const planStoryboard = createServerFn({ method: "POST" })
     }
   });
 
-function imagePayload(dataUrl: string): { url: string } | { b64_json: string } {
-  const match = dataUrl.match(/^data:image\/\w+;base64,(.+)$/);
-  if (match?.[1]) return { b64_json: match[1] };
-  return { url: dataUrl };
+async function imagineError(res: Response): Promise<string> {
+  const body = (await res.json().catch(() => null)) as { error?: unknown; message?: unknown } | null;
+  const detail = typeof body?.error === "string" ? body.error : typeof body?.message === "string" ? body.message : "";
+  return detail ? `Imagine returned ${res.status}: ${detail}` : `Imagine returned ${res.status}.`;
 }
 
 async function startGeneration(
   key: string,
   model: string,
   data: StartVideoInput,
-  withImage: boolean,
 ): Promise<{ ok: true; requestId: string } | { ok: false; error: string; status: number }> {
   const duration = Math.min(15, Math.max(1, Math.round(data.duration)));
   const body: Record<string, unknown> = {
@@ -263,8 +262,9 @@ async function startGeneration(
     resolution: "720p",
     generate_audio: true,
   };
-  if (withImage && data.startImageDataUrl) {
-    body.image = imagePayload(data.startImageDataUrl);
+  if (data.startImageDataUrl) {
+    // The API takes the start frame as `{ url }` — a public URL or a base64 data URL.
+    body.image = { url: data.startImageDataUrl };
   }
 
   const res = await fetch(`${XAI}/videos/generations`, {
@@ -277,7 +277,7 @@ async function startGeneration(
   });
 
   if (!res.ok) {
-    return { ok: false, error: `Imagine returned ${res.status}.`, status: res.status };
+    return { ok: false, error: await imagineError(res), status: res.status };
   }
 
   const payload = (await res.json()) as { request_id?: string; id?: string };
@@ -294,17 +294,13 @@ export const startVideo = createServerFn({ method: "POST" })
     if (!key) return { ok: false, error: "AI is not available in this environment." };
     if (!data.prompt.trim()) return { ok: false, error: "Nothing to roll — the prompt is empty." };
 
-    const useImage = Boolean(data.startImageDataUrl);
-    const first = await startGeneration(key, VIDEO_MODEL, data, useImage);
+    // Never retry without the start frame: a rejected frame must surface, not
+    // silently roll a take that ignores continuity.
+    const first = await startGeneration(key, VIDEO_MODEL, data);
     if (first.ok) return first;
-    if (useImage && (first.status === 400 || first.status === 422)) {
-      const noImage = await startGeneration(key, VIDEO_MODEL, data, false);
-      if (noImage.ok) return noImage;
-    }
     if (first.status === 404 || first.status === 400) {
-      const retry = await startGeneration(key, VIDEO_FALLBACK, data, useImage);
+      const retry = await startGeneration(key, VIDEO_FALLBACK, data);
       if (retry.ok) return retry;
-      return { ok: false, error: retry.error };
     }
     return { ok: false, error: first.error };
   });
@@ -358,9 +354,10 @@ export const pollVideo = createServerFn({ method: "POST" })
     return { ok: true, status, url, error: errText };
   });
 
-export const grabLastFrame = createServerFn({ method: "POST" })
+/** Pull one frame from a take: at `atSeconds`, or the last frame when omitted. */
+export const grabFrame = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .validator((input: { videoUrl: string }) => input)
+  .validator((input: { videoUrl: string; atSeconds?: number | null }) => input)
   .handler(async ({ context, data }): Promise<{ ok: true; dataUrl: string } | { ok: false; error: string }> => {
     const url = data.videoUrl.trim();
     let buf: Buffer | null = null;
@@ -411,16 +408,21 @@ export const grabLastFrame = createServerFn({ method: "POST" })
       const input = join(dir, "in.mp4");
       const output = join(dir, "out.jpg");
       await writeFile(input, buf);
+      const at = data.atSeconds;
+      const seek =
+        typeof at === "number" && Number.isFinite(at) && at >= 0
+          ? ["-ss", Math.min(at, 60).toFixed(3)]
+          : ["-sseof", "-0.4"];
       await execFileAsync(
         "ffmpeg",
-        ["-y", "-sseof", "-0.4", "-i", input, "-frames:v", "1", "-q:v", "5", output],
+        ["-y", ...seek, "-i", input, "-frames:v", "1", "-q:v", "5", output],
         { timeout: 20000 },
       );
       const jpg = await readFile(output);
       if (jpg.length > 900_000) return { ok: false, error: "Frame too large." };
       return { ok: true, dataUrl: `data:image/jpeg;base64,${jpg.toString("base64")}` };
     } catch {
-      return { ok: false, error: "Couldn't pull the last frame." };
+      return { ok: false, error: "Couldn't pull that frame." };
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

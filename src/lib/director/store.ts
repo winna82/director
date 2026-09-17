@@ -36,6 +36,7 @@ type DirectorState = {
   updateShot: (shotId: string, patch: Partial<Shot>) => void;
   setSequenceJob: (job: VideoJob | null) => void;
   setShotJob: (shotId: string, job: VideoJob) => void;
+  setContinuityFrame: (lastFrameDataUrl: string | null) => void;
   setPlanning: (planning: boolean, error?: string | null) => void;
   hydrateFromCloud: (projects: Project[]) => void;
 };
@@ -165,6 +166,11 @@ export const useDirector = create<DirectorState>()(
       setShotJob: (shotId, job) => {
         const cur = get().current();
         get().patch({ shotJobs: { ...cur.shotJobs, [shotId]: job } });
+      },
+      setContinuityFrame: (lastFrameDataUrl) => {
+        const cur = get().current();
+        if (!cur.continuity) return;
+        get().patch({ continuity: { ...cur.continuity, lastFrameDataUrl } });
       },
       setPlanning: (planning, error = null) => set({ planning, planError: error ?? null }),
       hydrateFromCloud: (incoming) => {

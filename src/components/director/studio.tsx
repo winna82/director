@@ -1,6 +1,7 @@
 import { Clapperboard, Copy, LoaderCircle, Plus } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
+import { FramePicker } from "@/components/director/frame-picker";
 import { SceneStrip } from "@/components/director/scene-strip";
 import { Segmented } from "@/components/director/segmented";
 import { Monitor } from "@/components/director/monitor";
@@ -9,7 +10,7 @@ import { ShotList } from "@/components/director/shot-list";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { UserButton } from "@/lib/auth/gates";
-import { checkAi, grabLastFrame, planStoryboard, startVideo } from "@/lib/director/ai";
+import { checkAi, grabFrame, planStoryboard, startVideo } from "@/lib/director/ai";
 import { composeShotPrompt } from "@/lib/director/compose";
 import { EXAMPLES } from "@/lib/director/examples";
 import { archiveTake, listScenes, saveScene } from "@/lib/director/persist";
@@ -34,6 +35,7 @@ export function Studio() {
     updateShot,
     setSequenceJob,
     setShotJob,
+    setContinuityFrame,
     setPlanning,
     hydrateFromCloud,
   } = useDirector();
@@ -44,7 +46,21 @@ export function Studio() {
   const [busyKind, setBusyKind] = useState<"sequence" | "shot" | null>(null);
   const [busyShotId, setBusyShotId] = useState<string | null>(null);
   const [continuing, setContinuing] = useState(false);
+  const [pickingFrame, setPickingFrame] = useState(false);
+  const [grabbing, setGrabbing] = useState(false);
   const stopWatch = useRef<(() => void) | null>(null);
+
+  // The take the continuity frame comes from: the parent scene's current
+  // sequence (it may have been rolled after Next scene), else the snapshot.
+  const parent = project.parentId ? projects.find((p) => p.id === project.parentId) : undefined;
+  const previousTakeUrl =
+    (parent?.sequence?.status === "done" ? parent.sequence.url : null) ??
+    project.continuity?.previousVideoUrl ??
+    null;
+
+  useEffect(() => {
+    setPickingFrame(false);
+  }, [project.id]);
 
   useEffect(() => {
     const ensure = () => {
@@ -244,7 +260,8 @@ export function Studio() {
         prompt,
         duration,
         aspectRatio: project.aspectRatio,
-        startImageDataUrl: project.continuity?.lastFrameDataUrl ?? null,
+        // Only the opening shot picks up from the previous scene's frame.
+        startImageDataUrl: shot.index === 1 ? (project.continuity?.lastFrameDataUrl ?? null) : null,
       },
     });
     if (!result.ok) {
@@ -278,7 +295,7 @@ export function Studio() {
     setContinuing(true);
     let lastFrame: string | null = null;
     if (project.sequence?.status === "done" && project.sequence.url) {
-      const frame = await grabLastFrame({ data: { videoUrl: project.sequence.url } });
+      const frame = await grabFrame({ data: { videoUrl: project.sequence.url } });
       if (frame.ok) lastFrame = frame.dataUrl;
     }
     const next = continueScene(lastFrame);
@@ -293,6 +310,25 @@ export function Studio() {
         : `Scene ${sceneNumber(next)} is on the desk. Write what happens next.`,
     );
     requestAnimationFrame(() => document.getElementById("brief")?.focus());
+  }
+
+  async function pickFrameAt(seconds: number) {
+    if (!previousTakeUrl) return;
+    setGrabbing(true);
+    try {
+      const frame = await grabFrame({ data: { videoUrl: previousTakeUrl, atSeconds: seconds } });
+      if (!frame.ok) {
+        toast.error(frame.error);
+        return;
+      }
+      setContinuityFrame(frame.dataUrl);
+      setPickingFrame(false);
+      toast.success(`Scene ${sceneNumber(project)} opens on the frame at ${seconds.toFixed(1)}s.`);
+    } catch {
+      toast.error("Couldn't pull that frame.");
+    } finally {
+      setGrabbing(false);
+    }
   }
 
   async function copyPrompt() {
@@ -360,21 +396,62 @@ export function Studio() {
           <SceneStrip project={project} projects={projects} onSelect={loadProject} />
 
           {project.continuity ? (
-            <div className="flex gap-3 rounded-xl border border-border bg-surface p-4">
-              {project.continuity.lastFrameDataUrl ? (
-                <img
-                  src={project.continuity.lastFrameDataUrl}
-                  alt=""
-                  className="size-16 shrink-0 rounded-md object-cover"
+            <div className="flex flex-col gap-3 rounded-xl border border-border bg-surface p-4">
+              <div className="flex gap-3">
+                {project.continuity.lastFrameDataUrl ? (
+                  <img
+                    src={project.continuity.lastFrameDataUrl}
+                    alt="Opening frame"
+                    className="h-16 w-24 shrink-0 rounded-md object-cover"
+                  />
+                ) : null}
+                <div className="min-w-0">
+                  <p className="text-xs font-medium uppercase tracking-widest text-subtle">
+                    Continuing scene {String(n).padStart(2, "0")}
+                  </p>
+                  <p className="mt-1 text-sm text-fg">{project.continuity.fromTitle}</p>
+                  <p className="mt-1 text-sm text-muted">Ended on: {project.continuity.fromLastShot}</p>
+                  <p className="mt-1 text-xs text-subtle">
+                    {project.continuity.lastFrameDataUrl
+                      ? "The take opens on this frame."
+                      : previousTakeUrl
+                        ? "No opening frame — faces and wardrobe are locked by description only."
+                        : "Roll camera on the previous scene to open on one of its frames."}
+                  </p>
+                  {previousTakeUrl && !pickingFrame ? (
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        size="sm"
+                        disabled={busyKind !== null}
+                        onClick={() => setPickingFrame(true)}
+                      >
+                        Choose frame
+                      </Button>
+                      {project.continuity.lastFrameDataUrl ? (
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          disabled={busyKind !== null}
+                          onClick={() => setContinuityFrame(null)}
+                        >
+                          No frame
+                        </Button>
+                      ) : null}
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+              {pickingFrame && previousTakeUrl ? (
+                <FramePicker
+                  videoUrl={previousTakeUrl}
+                  busy={grabbing}
+                  onPick={pickFrameAt}
+                  onCancel={() => setPickingFrame(false)}
                 />
               ) : null}
-              <div className="min-w-0">
-                <p className="text-xs font-medium uppercase tracking-widest text-subtle">
-                  Continuing scene {String(n).padStart(2, "0")}
-                </p>
-                <p className="mt-1 text-sm text-fg">{project.continuity.fromTitle}</p>
-                <p className="mt-1 text-sm text-muted">Ended on: {project.continuity.fromLastShot}</p>
-              </div>
             </div>
           ) : null}
 
