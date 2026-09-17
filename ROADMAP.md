@@ -1,15 +1,16 @@
 # Director roadmap
 
-Ideas captured for later. The first management phase — library drawer, reel
-names, delete (immediate bucket removal, soft-deleted records) and take history —
-is built; everything below is not.
+Ideas captured for later. Built so far: library drawer, reel names, delete
+(immediate bucket removal, soft-deleted records), take history, scene layouts and
+Play reel. Everything below is not built.
 
 ## Library and reels
 
 - **Duplicate scene** — copy a scene's brief, board and continuity to try a
   variation without re-planning.
-- **Export reel** — join each scene's chosen take into one downloadable video
-  (ffmpeg is already in the image).
+- **Export reel** — join each scene's chosen take into one downloadable MP4 in the
+  bucket (ffmpeg is already in the image). Stream copy when takes share a format,
+  re-encode otherwise; needs a re-export when takes change.
 - **Reorder scenes** within a reel.
 - **Trash with restore** — keep deleted videos for a grace period before purging.
   Today deletes purge the bucket immediately, by decision.

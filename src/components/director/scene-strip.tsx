@@ -1,3 +1,5 @@
+import { Play } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { bySceneOrder, reelIdOf, sceneNumber, type Project } from "@/lib/director/types";
 
@@ -5,10 +7,13 @@ export function SceneStrip({
   project,
   projects,
   onSelect,
+  onPlayReel,
 }: {
   project: Project;
   projects: Project[];
   onSelect: (id: string) => void;
+  /** Present when the reel has takes worth playing back to back. */
+  onPlayReel?: () => void;
 }) {
   const reel = projects.filter((p) => reelIdOf(p) === reelIdOf(project)).sort(bySceneOrder);
 
@@ -16,7 +21,15 @@ export function SceneStrip({
 
   return (
     <div className="flex flex-col gap-2">
-      <p className="text-xs font-medium uppercase tracking-widest text-subtle">Reel</p>
+      <div className="flex min-h-9 items-center justify-between gap-3">
+        <p className="text-xs font-medium uppercase tracking-widest text-subtle">Reel</p>
+        {onPlayReel ? (
+          <Button type="button" variant="ghost" size="sm" onClick={onPlayReel}>
+            <Play className="size-3.5" />
+            Play reel
+          </Button>
+        ) : null}
+      </div>
       <div className="flex gap-2 overflow-x-auto pb-1">
         {reel.map((p, i) => {
           const active = p.id === project.id;

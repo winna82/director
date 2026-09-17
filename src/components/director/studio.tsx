@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { FramePicker } from "@/components/director/frame-picker";
 import { LibraryDrawer } from "@/components/director/library-drawer";
+import { ReelPlayer } from "@/components/director/reel-player";
 import { SceneStrip } from "@/components/director/scene-strip";
 import { Segmented } from "@/components/director/segmented";
 import { Monitor } from "@/components/director/monitor";
@@ -20,6 +21,7 @@ import { archiveTake, listScenes, saveScene } from "@/lib/director/persist";
 import { useDirector } from "@/lib/director/store";
 import { vaultPut } from "@/lib/director/vault";
 import {
+  bySceneOrder,
   isBlankDraft,
   LAYOUT_LABELS,
   reelIdOf,
@@ -68,6 +70,7 @@ export function Studio() {
   const [pickingFrame, setPickingFrame] = useState(false);
   const [grabbing, setGrabbing] = useState(false);
   const [libraryOpen, setLibraryOpen] = useState(false);
+  const [reelPlayerOpen, setReelPlayerOpen] = useState(false);
   // One poller per in-flight generation, keyed by request id.
   const watchers = useRef(new Map<string, () => void>());
 
@@ -425,6 +428,8 @@ export function Studio() {
   const canRoll = Boolean(project.board) && !needsReplan && busy === null && !planning && !continuing;
   const canContinue = Boolean(project.board) && busy === null && !planning && !continuing;
   const rollingHere = busy?.sceneId === project.id ? busy : null;
+  const reelScenes = projects.filter((p) => reelIdOf(p) === reelIdOf(project)).sort(bySceneOrder);
+  const reelPlayable = reelScenes.length > 1 && reelScenes.some((p) => p.sequence?.status === "done");
   const n = scenePosition(project, projects);
 
   return (
@@ -499,7 +504,13 @@ export function Studio() {
             </p>
           </div>
 
-          <SceneStrip project={project} projects={projects} onSelect={loadProject} />
+          <SceneStrip
+            project={project}
+            projects={projects}
+            onSelect={loadProject}
+            onPlayReel={reelPlayable ? () => setReelPlayerOpen(true) : undefined}
+          />
+          <ReelPlayer open={reelPlayerOpen} onOpenChange={setReelPlayerOpen} scenes={reelScenes} />
 
           {project.continuity ? (
             <div className="flex flex-col gap-3 rounded-xl border border-border bg-surface p-4">
