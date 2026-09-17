@@ -7,6 +7,20 @@ export type ClipDuration = (typeof DURATIONS)[number];
 export const MODES = ["automatic", "storyboard"] as const;
 export type DirectorMode = (typeof MODES)[number];
 
+/** How the clip uses the frame: sequential full-frame shots, or panels on screen together. */
+export const LAYOUTS = ["single", "split", "grid"] as const;
+export type SceneLayout = (typeof LAYOUTS)[number];
+
+export const LAYOUT_LABELS: Record<SceneLayout, string> = {
+  single: "Single frame",
+  split: "Split screen",
+  grid: "Grid",
+};
+
+export function asLayout(value: unknown): SceneLayout {
+  return (LAYOUTS as readonly unknown[]).includes(value) ? (value as SceneLayout) : "single";
+}
+
 export const SHOT_SIZES = [
   "extreme-close-up",
   "close-up",
@@ -58,6 +72,8 @@ export type Storyboard = {
   audio: string;
   shots: Shot[];
   sequencePrompt: string;
+  /** The layout Director planned these shots for; absent on boards from before layouts. */
+  layout?: SceneLayout;
 };
 
 export type Continuity = {
@@ -89,6 +105,7 @@ export type Project = {
   mode: DirectorMode;
   aspectRatio: AspectRatio;
   duration: ClipDuration;
+  layout: SceneLayout;
   board: Storyboard | null;
   sequence: VideoJob | null;
   shotJobs: Record<string, VideoJob>;
@@ -107,6 +124,7 @@ export function emptyProject(partial?: Partial<Project>): Project {
     mode: "automatic",
     aspectRatio: "16:9",
     duration: 10,
+    layout: "single",
     board: null,
     sequence: null,
     shotJobs: {},
@@ -149,5 +167,6 @@ export function endingLine(board: Storyboard): string {
   const line = last.dialogue
     ? `${last.dialogue.character} says, "${last.dialogue.line}"`
     : "";
-  return `${last.shotSize}, ${last.angle}. ${last.action} ${line}`.trim();
+  // Story, not framing: a camera description here reads to Imagine as another image to show.
+  return `${last.action} ${line}`.trim();
 }

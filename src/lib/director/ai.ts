@@ -1,18 +1,19 @@
 import { createServerFn } from "@tanstack/react-start";
 import { authMiddleware } from "@/lib/auth/middleware";
-import { composeSequencePrompt, composeShotPrompt, lockWorld } from "./compose";
+import { composeSequencePrompt, composeShotPrompt, lockWorld, panelNames, shotLimit } from "./compose";
 import { DIRECTOR_SYSTEM } from "./prompt";
 import type {
   AspectRatio,
   ClipDuration,
   Continuity,
   DirectorMode,
+  SceneLayout,
   Shot,
   ShotSize,
   Storyboard,
   WorldBible,
 } from "./types";
-import { SHOT_SIZES } from "./types";
+import { asLayout, LAYOUT_LABELS, SHOT_SIZES } from "./types";
 
 const XAI = "https://api.x.ai/v1";
 const CHAT_MODEL = "grok-4.5";
@@ -26,6 +27,7 @@ type PlanInput = {
   mode: DirectorMode;
   aspectRatio: AspectRatio;
   duration: ClipDuration;
+  layout: SceneLayout;
   continuity?: ContinuityPayload | null;
 };
 
@@ -69,6 +71,8 @@ function normalizeShotSize(value: unknown): ShotSize | string {
 function parseBoard(
   raw: unknown,
   duration: ClipDuration,
+  layout: SceneLayout,
+  aspectRatio: AspectRatio,
   continuity?: ContinuityPayload | null,
 ): Storyboard {
   if (!raw || typeof raw !== "object") {
@@ -99,11 +103,16 @@ function parseBoard(
   }
 
   const shotsRaw = Array.isArray(o.shots) ? o.shots : [];
-  if (shotsRaw.length < 1) {
-    throw new Error("Director returned no shots.");
+  const limit = shotLimit(layout, duration);
+  if (shotsRaw.length < limit.min) {
+    throw new Error(
+      shotsRaw.length
+        ? `Director planned ${shotsRaw.length} of the ${limit.min} panels ${LAYOUT_LABELS[layout].toLowerCase()} needs. Call Director again.`
+        : "Director returned no shots.",
+    );
   }
 
-  const shots: Shot[] = shotsRaw.slice(0, 6).map((item, i) => {
+  const shots: Shot[] = shotsRaw.slice(0, limit.max).map((item, i) => {
     const s = (item ?? {}) as Record<string, unknown>;
     const dialogueRaw = s.dialogue;
     let dialogue: Shot["dialogue"] = null;
@@ -128,7 +137,10 @@ function parseBoard(
   });
 
   const sum = shots.reduce((n, s) => n + s.duration, 0);
-  if (sum !== duration && sum > 0) {
+  if (layout !== "single") {
+    // Panels play simultaneously, each for the whole clip.
+    for (const shot of shots) shot.duration = duration;
+  } else if (sum !== duration && sum > 0) {
     const scale = duration / sum;
     let used = 0;
     shots.forEach((shot, i) => {
@@ -148,11 +160,12 @@ function parseBoard(
     audio: asString(o.audio, continuity?.audio ?? "natural ambience, no score"),
     shots,
     sequencePrompt: asString(o.sequencePrompt),
+    layout,
   };
   const cont: Continuity | null = continuity
     ? { ...continuity, lastFrameDataUrl: null, previousVideoUrl: null }
     : null;
-  board.sequencePrompt = composeSequencePrompt(board, cont);
+  board.sequencePrompt = composeSequencePrompt(board, cont, aspectRatio);
   board.shots = board.shots.map((shot) => ({
     ...shot,
     prompt: composeShotPrompt(board, shot, cont),
@@ -195,10 +208,17 @@ export const planStoryboard = createServerFn({ method: "POST" })
     if (brief.length < 8) return { ok: false, error: "Give the director a bit more to work with." };
     if (brief.length > 4000) return { ok: false, error: "Brief is too long. Keep it under 4,000 characters." };
 
+    const layout = asLayout(data.layout);
+    const limit = shotLimit(layout, data.duration);
+    const layoutLine =
+      layout === "single"
+        ? `Layout: single — one full frame at a time. Plan 1 to ${limit.max} shots; durations MUST sum to ${data.duration}.`
+        : `Layout: ${layout} — ${limit.max} panels on screen together (${panelNames(layout, data.aspectRatio).join(", ")}). Plan exactly ${limit.max} shots, one per panel in that order, each ${data.duration} seconds long.`;
     const user = [
       `Mode: ${data.mode === "storyboard" ? "storyboard (honor the user's shot list)" : "automatic (plan coverage)"}`,
       `Aspect ratio: ${data.aspectRatio}`,
-      `Total duration: ${data.duration} seconds. Shot durations MUST sum to ${data.duration}.`,
+      `Total duration: ${data.duration} seconds.`,
+      layoutLine,
       data.continuity ? continuityUserBlock(data.continuity) : "",
       "",
       "Brief:",
@@ -234,7 +254,7 @@ export const planStoryboard = createServerFn({ method: "POST" })
     };
     const text = body.choices?.[0]?.message?.content ?? "";
     try {
-      const board = parseBoard(extractJson(text), data.duration, data.continuity);
+      const board = parseBoard(extractJson(text), data.duration, layout, data.aspectRatio, data.continuity);
       return { ok: true, board };
     } catch (err) {
       const message = err instanceof Error ? err.message : "Could not parse the storyboard.";

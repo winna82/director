@@ -19,7 +19,14 @@ import { listReelScenes } from "@/lib/director/library";
 import { archiveTake, listScenes, saveScene } from "@/lib/director/persist";
 import { useDirector } from "@/lib/director/store";
 import { vaultPut } from "@/lib/director/vault";
-import { isBlankDraft, reelIdOf, scenePosition, type Shot, type VideoJob } from "@/lib/director/types";
+import {
+  isBlankDraft,
+  LAYOUT_LABELS,
+  reelIdOf,
+  scenePosition,
+  type Shot,
+  type VideoJob,
+} from "@/lib/director/types";
 import { cn } from "@/lib/utils";
 
 const LIBRARY_OPEN_KEY = "director.library-open";
@@ -43,6 +50,7 @@ export function Studio() {
     setMode,
     setAspect,
     setDuration,
+    setLayout,
     setBoard,
     updateShot,
     setJobFor,
@@ -229,6 +237,7 @@ export function Studio() {
         mode: project.mode,
         aspectRatio: project.aspectRatio,
         duration: project.duration,
+        layout: project.layout,
         continuity,
       },
     });
@@ -260,7 +269,8 @@ export function Studio() {
         prompt: project.board.sequencePrompt,
         duration: project.duration,
         aspectRatio: project.aspectRatio,
-        startImageDataUrl: project.continuity?.lastFrameDataUrl ?? null,
+        // An opening frame is one full image; panel layouts roll without it.
+        startImageDataUrl: boardLayout === "single" ? (project.continuity?.lastFrameDataUrl ?? null) : null,
       },
     });
     if (!result.ok) {
@@ -410,7 +420,9 @@ export function Studio() {
   }
 
   const canPlan = project.brief.trim().length >= 8 && !planning && busy === null && !continuing;
-  const canRoll = Boolean(project.board) && busy === null && !planning && !continuing;
+  const boardLayout = project.board?.layout ?? "single";
+  const needsReplan = Boolean(project.board) && boardLayout !== project.layout;
+  const canRoll = Boolean(project.board) && !needsReplan && busy === null && !planning && !continuing;
   const canContinue = Boolean(project.board) && busy === null && !planning && !continuing;
   const rollingHere = busy?.sceneId === project.id ? busy : null;
   const n = scenePosition(project, projects);
@@ -507,7 +519,9 @@ export function Studio() {
                   <p className="mt-1 text-sm text-muted">Ended on: {project.continuity.fromLastShot}</p>
                   <p className="mt-1 text-xs text-subtle">
                     {project.continuity.lastFrameDataUrl
-                      ? "The take opens on this frame."
+                      ? project.layout === "single"
+                        ? "The take opens on this frame."
+                        : `Opening frames apply to Single frame — ${LAYOUT_LABELS[project.layout]} rolls without it.`
                       : previousTakeUrl
                         ? "No opening frame — faces and wardrobe are locked by description only."
                         : parentDeleted
@@ -630,6 +644,16 @@ export function Studio() {
                     { value: 15, label: "15s" },
                   ]}
                 />
+                <Segmented
+                  ariaLabel="Layout"
+                  value={project.layout}
+                  onChange={setLayout}
+                  options={[
+                    { value: "single", label: "Single" },
+                    { value: "split", label: "Split" },
+                    { value: "grid", label: "Grid" },
+                  ]}
+                />
               </div>
             </div>
             <Button type="button" size="lg" disabled={!canPlan} onClick={onPlan}>
@@ -686,6 +710,12 @@ export function Studio() {
                   </Button>
                 </div>
               </div>
+              {needsReplan ? (
+                <p className="rounded-lg border border-border bg-surface px-4 py-3 text-sm text-muted">
+                  Planned for {LAYOUT_LABELS[boardLayout]}. Call Director to re-plan for{" "}
+                  {LAYOUT_LABELS[project.layout]}, or switch the layout back to roll this board.
+                </p>
+              ) : null}
               <p className="text-sm text-muted">
                 {project.board.world.style}. {project.board.audio}
               </p>
@@ -697,7 +727,9 @@ export function Studio() {
                 rollingId={rollingHere?.kind === "shot" ? rollingHere.shotId : null}
               />
               <p className="text-xs text-subtle">
-                Roll camera generates one {project.duration}s sequence from the full board.
+                {boardLayout === "single"
+                  ? `Roll camera generates one ${project.duration}s sequence from the full board.`
+                  : `Roll camera generates one ${project.duration}s clip with all ${project.board.shots.length} panels on screen together.`}{" "}
                 Next scene carries faces, wardrobe, and the ending beat into the following clip.
               </p>
             </div>

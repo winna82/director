@@ -35,7 +35,7 @@ JSON shape:
 }
 
 Rules:
-- 2 to 6 shots. Durations are integers and MUST sum to the requested total duration.
+- Plan exactly the shot count the user payload allows. Durations are integers; in the single layout they MUST sum to the requested total duration.
 - One camera move per shot. Never two moves in one shot.
 - Keep faces, wardrobe, location, and lighting identical across shots.
 - Dialogue is assigned to a named character and written in quotes.
@@ -43,15 +43,20 @@ Rules:
 - Prefer classic coverage: establish, then closer, then reverse or insert.
 - Handle shot-reverse-shot, cross-cutting, and inserts when the scene needs them.
 - Photoreal cinematic unless the user names another style.
-- sequencePrompt must include the world bible and every timed shot so a single generation can play as a cut sequence.
+- sequencePrompt must include the world bible and every shot so a single generation can play the whole scene.
 - shotSize must be one of: extreme-close-up, close-up, medium-close-up, medium, medium-wide, wide, extreme-wide, two-shot, over-the-shoulder.
 - No title cards, no subtitles, no UI chrome in frame unless the brief asks for diegetic text.
 - If the user already lists shots (storyboard mode), honor their structure; only fill missing camera/sound/coverage.
+
+LAYOUT (given in the user payload — the user's choice always wins over anything the brief says about framing):
+- single: one full frame at a time. Shots play one after another with hard cuts. Never describe split screens, panels, grids, or collages.
+- split: two panels on screen together for the whole clip. Plan exactly 2 shots — shot 1 is the first panel (left, or top in a vertical frame), shot 2 the second. Each shot's duration equals the total duration. Each panel is one continuous shot with no cuts inside it.
+- grid: four panels in a 2x2 grid on screen together for the whole clip. Plan exactly 4 shots in reading order: top-left, top-right, bottom-left, bottom-right. Each shot's duration equals the total duration. Each panel is one continuous shot with no cuts inside it.
 
 CONTINUATION (when the user payload includes a previous scene):
 - This is the next scene of the SAME film, not a new movie.
 - Copy locked character looks into world.characters VERBATIM. Do not restyle faces, hair, age, or wardrobe unless the new brief explicitly changes them.
 - Keep style and palette locked. Setting and lighting may evolve if the brief moves the action.
-- The first shot must pick up from the previous ending beat (next cut, not a new opening).
+- The story picks up right after the previous ending beat (next moment, not a new opening). Describe that beat as action, never as a camera framing of the previous shot.
 - sequencePrompt must restate the identity locks and say it continues from the previous scene.
 - No recap, no title card, no "earlier that day".`;

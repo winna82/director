@@ -1,7 +1,7 @@
 import { createServerFn } from "@tanstack/react-start";
 import { authMiddleware } from "@/lib/auth/middleware";
 import { getSql } from "@/lib/db";
-import { emptyProject, type Project } from "./types";
+import { asLayout, emptyProject, type Project } from "./types";
 
 const MAX_BYTES = 28 * 1024 * 1024;
 
@@ -14,6 +14,7 @@ export type SceneRow = {
   mode: string;
   aspect_ratio: string;
   duration: number;
+  layout: string;
   board_json: string | null;
   continuity_json: string | null;
   sequence_json: string | null;
@@ -31,7 +32,7 @@ function parseJson<T>(raw: string | null, fallback: T): T {
   }
 }
 
-export const SCENE_COLUMNS = `id, reel_id, scene_index, parent_id, brief, mode, aspect_ratio, duration,
+export const SCENE_COLUMNS = `id, reel_id, scene_index, parent_id, brief, mode, aspect_ratio, duration, layout,
   board_json, continuity_json, sequence_json, shot_jobs_json, created_at, updated_at`;
 
 export function rowToProject(row: SceneRow): Project {
@@ -44,6 +45,7 @@ export function rowToProject(row: SceneRow): Project {
     mode: (row.mode as Project["mode"]) || "automatic",
     aspectRatio: (row.aspect_ratio as Project["aspectRatio"]) || "16:9",
     duration: (Number(row.duration) as Project["duration"]) || 10,
+    layout: asLayout(row.layout),
     board: parseJson(row.board_json, null),
     continuity: parseJson(row.continuity_json, null),
     sequence: parseJson(row.sequence_json, null),
@@ -117,11 +119,12 @@ export const saveScene = createServerFn({ method: "POST" })
 
     const saved = await sql<{ id: string }>`
       insert into director_scenes (
-        id, user_id, reel_id, scene_index, parent_id, brief, mode, aspect_ratio, duration,
+        id, user_id, reel_id, scene_index, parent_id, brief, mode, aspect_ratio, duration, layout,
         board_json, continuity_json, sequence_json, shot_jobs_json, created_at, updated_at
       ) values (
         ${project.id}, ${context.userId}, ${reelId}, ${project.sceneIndex || 1},
         ${project.parentId}, ${project.brief}, ${project.mode}, ${project.aspectRatio}, ${project.duration},
+        ${asLayout(project.layout)},
         ${JSON.stringify(project.board)}, ${JSON.stringify(project.continuity)},
         ${JSON.stringify(project.sequence)}, ${JSON.stringify(project.shotJobs)},
         ${now}, ${now}
@@ -134,6 +137,7 @@ export const saveScene = createServerFn({ method: "POST" })
         mode = excluded.mode,
         aspect_ratio = excluded.aspect_ratio,
         duration = excluded.duration,
+        layout = excluded.layout,
         board_json = excluded.board_json,
         continuity_json = excluded.continuity_json,
         sequence_json = excluded.sequence_json,

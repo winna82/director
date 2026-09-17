@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { composeSequencePrompt, composeShotPrompt, lockWorld } from "./compose";
 import {
+  asLayout,
   bySceneOrder,
   emptyProject,
   endingLine,
@@ -12,6 +13,7 @@ import {
   type Continuity,
   type DirectorMode,
   type Project,
+  type SceneLayout,
   type Shot,
   type Storyboard,
   type VideoJob,
@@ -33,6 +35,7 @@ type DirectorState = {
   setMode: (mode: DirectorMode) => void;
   setAspect: (aspectRatio: AspectRatio) => void;
   setDuration: (duration: ClipDuration) => void;
+  setLayout: (layout: SceneLayout) => void;
   setBoard: (board: Storyboard) => void;
   updateShot: (shotId: string, patch: Partial<Shot>) => void;
   setSequenceJob: (job: VideoJob | null) => void;
@@ -44,6 +47,14 @@ type DirectorState = {
   setPlanning: (planning: boolean, error?: string | null) => void;
   hydrateFromCloud: (projects: Project[], opts?: { deletedIds?: string[]; focusId?: string }) => void;
 };
+
+/** Recompose every prompt from the board's structured fields for the scene's framing. */
+function withPrompts(board: Storyboard, continuity: Continuity | null, aspectRatio: AspectRatio): Storyboard {
+  const next: Storyboard = { ...board };
+  next.sequencePrompt = composeSequencePrompt(next, continuity, aspectRatio);
+  next.shots = next.shots.map((shot) => ({ ...shot, prompt: composeShotPrompt(next, shot, continuity) }));
+  return next;
+}
 
 function touch(project: Project, partial: Partial<Project>): Project {
   return { ...project, ...partial, updatedAt: Date.now() };
@@ -101,6 +112,7 @@ export const useDirector = create<DirectorState>()(
           aspectRatio: cur.aspectRatio,
           duration: cur.duration,
           mode: cur.mode,
+          layout: cur.layout,
           continuity,
         });
         set((s) => ({
@@ -121,6 +133,7 @@ export const useDirector = create<DirectorState>()(
                 mode: cur.mode,
                 aspectRatio: cur.aspectRatio,
                 duration: cur.duration,
+                layout: cur.layout,
                 board: cur.board,
                 sequence: cur.sequence,
                 shotJobs: cur.shotJobs,
@@ -136,20 +149,21 @@ export const useDirector = create<DirectorState>()(
       },
       setBrief: (brief) => get().patch({ brief }),
       setMode: (mode) => get().patch({ mode }),
-      setAspect: (aspectRatio) => get().patch({ aspectRatio }),
+      setAspect: (aspectRatio) => {
+        const cur = get().current();
+        // Split panels sit side by side or stacked depending on the frame, so prompts follow the aspect.
+        get().patch({
+          aspectRatio,
+          ...(cur.board ? { board: withPrompts(cur.board, cur.continuity, aspectRatio) } : {}),
+        });
+      },
       setDuration: (duration) => get().patch({ duration }),
+      // The board stays planned for its own layout; the studio asks for a re-plan on mismatch.
+      setLayout: (layout) => get().patch({ layout }),
       setBoard: (board) => {
         const cur = get().current();
-        let next = board;
-        if (cur.continuity) {
-          const world = lockWorld(board.world, cur.continuity.world);
-          next = { ...board, world };
-          next.sequencePrompt = composeSequencePrompt(next, cur.continuity);
-          next.shots = next.shots.map((shot) => ({
-            ...shot,
-            prompt: composeShotPrompt(next, shot, cur.continuity),
-          }));
-        }
+        const world = cur.continuity ? lockWorld(board.world, cur.continuity.world) : board.world;
+        const next = withPrompts({ ...board, world }, cur.continuity, cur.aspectRatio);
         get().patch({ board: next, sequence: null, shotJobs: {} });
       },
       updateShot: (shotId, patch) => {
@@ -158,12 +172,7 @@ export const useDirector = create<DirectorState>()(
         const shots = cur.board.shots.map((shot) =>
           shot.id === shotId ? { ...shot, ...patch } : shot,
         );
-        const board: Storyboard = { ...cur.board, shots };
-        board.shots = board.shots.map((shot) => ({
-          ...shot,
-          prompt: composeShotPrompt(board, shot, cur.continuity),
-        }));
-        board.sequencePrompt = composeSequencePrompt(board, cur.continuity);
+        const board = withPrompts({ ...cur.board, shots }, cur.continuity, cur.aspectRatio);
         get().patch({ board, sequence: null });
       },
       setSequenceJob: (job) => get().patch({ sequence: job }),
@@ -239,6 +248,15 @@ export const useDirector = create<DirectorState>()(
     }),
     {
       name: "director.v1",
+      version: 1,
+      // v0 projects predate layouts.
+      migrate: (persisted) => {
+        const state = persisted as { projects?: Project[]; currentId?: string | null };
+        return {
+          ...state,
+          projects: (state.projects ?? []).map((p) => ({ ...p, layout: asLayout(p.layout) })),
+        } as DirectorState;
+      },
       partialize: (s) => ({ projects: s.projects, currentId: s.currentId }),
     },
   ),

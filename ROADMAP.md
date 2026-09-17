@@ -23,6 +23,8 @@ is built; everything below is not.
 - **Extend take** — continue the actual video with `POST /v1/videos/extensions`
   (adds 2–10 s to a 2–15 s take) for seamless continuations.
 - **Voice lock** — give each character a preset voice via `reference_audios`.
+- **Refresh from previous scene** — a continued scene snapshots the previous scene's
+  characters, palette and ending once; re-planning the earlier scene doesn't update it.
 - **Chain per-shot rolls** — start shot N from shot N−1's last frame; today only
   shot 1 opens on the previous scene's frame.
 
