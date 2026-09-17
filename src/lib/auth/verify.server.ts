@@ -1,4 +1,5 @@
 import { getRequest } from "@tanstack/react-start/server";
+import { isEmailAllowed } from "./allowlist.server";
 import { gateIdentityEnabled } from "./gate-identity.server";
 import { auth, authConfigured } from "./server";
 
@@ -93,5 +94,7 @@ export async function requireUserId(bearerToken?: string): Promise<string> {
   }
   const user = await getSessionUser(bearerToken);
   if (!user) throw new UnauthorizedError();
+  // Accounts created before ALLOWED_EMAILS existed must not spend XAI_API_KEY.
+  if (!isEmailAllowed(user.email)) throw new UnauthorizedError();
   return user.id;
 }
